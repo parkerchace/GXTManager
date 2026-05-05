@@ -1,0 +1,15 @@
+# Reports
+*.csv
+
+# Internal tickets / org-specific docs
+STORY.md
+
+# Python
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store
+
+# WebDriver Manager cache
+.wdm/
