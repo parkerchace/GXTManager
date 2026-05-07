@@ -23,6 +23,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException, NoSuchWindowException
+from selenium.webdriver.common.action_chains import ActionChains
 from webdriver_manager.firefox import GeckoDriverManager
 
 LOG_QUEUE = queue.Queue()
@@ -524,6 +525,47 @@ def _wait_for_device_online(driver, location: str, ip: str, timeout: int = 480) 
     return False
 
 
+def _wait_for_reboot_page(driver, location: str, ip: str, timeout: int = 480) -> bool:
+    """After clicking Run Alternate, stay on the reboot-holding page and wait for the
+    login form to appear — the Vertiv page transitions on its own, do NOT navigate away."""
+    log(f"[{location} | {ip}] Staying on reboot page — waiting for login to appear (up to {timeout}s) ...")
+    deadline = time.time() + timeout
+    attempt = 0
+    while time.time() < deadline:
+        attempt += 1
+        try:
+            driver.switch_to.default_content()
+            body = ""
+            try:
+                body = driver.find_element(By.TAG_NAME, "body").text.lower()
+            except Exception:
+                pass
+
+            if driver.find_elements(By.ID, "username") and driver.find_elements(By.ID, "password"):
+                log(f"[{location} | {ip}] Login page ready.")
+                return True
+
+            if "attempting to reconnect" in body or "web card has been rebooted" in body:
+                log(f"[{location} | {ip}] Still rebooting (attempt {attempt}) ...")
+            elif body:
+                log(f"[{location} | {ip}] Waiting for login (attempt {attempt}) ...")
+        except Exception as e:
+            log(f"[{location} | {ip}] Waiting ... ({_short_error(e)})")
+
+        time.sleep(10)
+
+    log(f"[{location} | {ip}] Login page did not appear within {timeout}s.")
+    return False
+
+
+def _real_click(driver, el) -> None:
+    """Real click with ActionChains fallback if element is not directly interactable."""
+    try:
+        el.click()
+    except Exception:
+        ActionChains(driver).move_to_element(el).click().perform()
+
+
 def _click_run_alternate(driver, location: str, ip: str) -> bool:
     """Click Enable then Run Alternate and confirm the dialog. Returns True if clicked."""
     try:
@@ -531,22 +573,25 @@ def _click_run_alternate(driver, location: str, ip: str) -> bool:
                                            label="Enable", require_visible=False)
         driver.execute_script("arguments[0].scrollIntoView(true);", enable_btn)
         time.sleep(0.5)
-        enable_btn.click()
+        _real_click(driver, enable_btn)
         log(f"[{location} | {ip}] Enable clicked — waiting for Run Alternate to activate ...")
+        time.sleep(2)  # give the UI time to react before polling
 
         run_alt = None
-        deadline_btn = time.time() + 20
+        deadline_btn = time.time() + 30
         while time.time() < deadline_btn:
             try:
                 btn = find_element_anywhere(driver, By.ID, "commBtn263", timeout=5,
                                             label="Run Alternate", require_visible=False)
                 disabled = btn.get_attribute("disabled")
-                if disabled is None or disabled.lower() in ("false", ""):
+                # Only None means the attribute is absent = button is enabled
+                if disabled is None:
                     run_alt = btn
                     break
-            except Exception:
-                pass
-            time.sleep(1)
+                log(f"[{location} | {ip}] Run Alternate still disabled (attr={disabled!r}) — waiting ...")
+            except Exception as e:
+                log(f"[{location} | {ip}] Waiting for Run Alternate button ... ({_short_error(e)})")
+            time.sleep(2)
 
         if not run_alt:
             log(f"[{location} | {ip}] Run Alternate button never became enabled.")
@@ -554,14 +599,28 @@ def _click_run_alternate(driver, location: str, ip: str) -> bool:
 
         driver.execute_script("arguments[0].scrollIntoView(true);", run_alt)
         time.sleep(0.5)
-        run_alt.click()
+        log(f"[{location} | {ip}] Clicking Run Alternate ...")
+        _real_click(driver, run_alt)
 
+        # Native browser confirm dialog
         try:
-            alert = WebDriverWait(driver, 10).until(EC.alert_is_present())
+            alert = WebDriverWait(driver, 15).until(EC.alert_is_present())
             alert.accept()
             log(f"[{location} | {ip}] Run Alternate confirmed — device will reboot.")
-        except Exception:
-            log(f"[{location} | {ip}] Run Alternate clicked (no confirmation dialog appeared).")
+        except TimeoutException:
+            # Fall back to HTML modal OK button if no native alert appeared
+            log(f"[{location} | {ip}] No native alert — checking for HTML OK dialog ...")
+            try:
+                ok_btn = find_element_anywhere(
+                    driver,
+                    By.XPATH,
+                    "//button[normalize-space(translate(.,'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'))='OK']"
+                    " | //input[@type='button' and normalize-space(translate(@value,'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'))='OK']",
+                    timeout=5, label="OK button", require_visible=True)
+                _real_click(driver, ok_btn)
+                log(f"[{location} | {ip}] HTML OK dialog confirmed — device will reboot.")
+            except Exception:
+                log(f"[{location} | {ip}] Run Alternate clicked — no confirmation dialog detected.")
         return True
     except Exception as exc:
         log(f"[{location} | {ip}] _click_run_alternate failed: {_short_error(exc)}")
@@ -598,10 +657,15 @@ def _nav_to_firmware_page(driver, location: str, ip: str,
     except TimeoutException:
         log(f"[{location} | {ip}] Support link not found — looking for Firmware Update link directly ...")
 
-    fw_link = find_element_anywhere(
-        driver,
-        By.XPATH, "//a[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'firmware')]",
-        timeout=30, label="Firmware Update link", require_visible=False)
+    # Use the known Firmware Update link ID; fall back to text search if missing
+    try:
+        fw_link = find_element_anywhere(driver, By.ID, "report164380", timeout=15,
+                                        label="Firmware Update link", require_visible=False)
+    except TimeoutException:
+        fw_link = find_element_anywhere(
+            driver,
+            By.XPATH, "//a[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'firmware')]",
+            timeout=20, label="Firmware Update link (fallback)", require_visible=False)
     js_click(driver, fw_link)
     time.sleep(2)
 
@@ -712,9 +776,9 @@ def process_firmware_ip(location: str, ip: str, username: str, password: str,
                         log(f"[{location} | {ip}] [RECOVERY 3/4] Run Alternate failed — giving up.")
                         recovery_ok = False; break
 
-                    # Step 4: wait for reboot → sign back in → navigate for retry upload
+                    # Step 4: stay on reboot page → wait for login → sign back in → nav for retry
                     log(f"[{location} | {ip}] [RECOVERY 4/4] Waiting for device to reboot ...")
-                    if not _wait_for_device_online(driver, location, ip, timeout=480):
+                    if not _wait_for_reboot_page(driver, location, ip, timeout=480):
                         log(f"[{location} | {ip}] [RECOVERY 4/4] Device did not come back — giving up.")
                         recovery_ok = False; break
                     log(f"[{location} | {ip}] [RECOVERY 4/4] Signing back in ...")
@@ -729,8 +793,11 @@ def process_firmware_ip(location: str, ip: str, username: str, password: str,
                     # ── End recovery ────────────────────────────────────────────────
 
                 log(f"[{location} | {ip}] Clicking Enable (attempt {attempt}) ...")
-                js_click(driver, find_element_anywhere(driver, By.ID, "enableComms", timeout=20,
-                                                       label="Enable button", require_visible=False))
+                en = find_element_anywhere(driver, By.ID, "enableComms", timeout=20,
+                                           label="Enable button", require_visible=False)
+                driver.execute_script("arguments[0].scrollIntoView(true);", en)
+                time.sleep(0.3)
+                _real_click(driver, en)
                 time.sleep(2)
 
                 log(f"[{location} | {ip}] Clicking Web ...")
@@ -771,24 +838,30 @@ def process_firmware_ip(location: str, ip: str, username: str, password: str,
             result["upgrade_applied"] = "error" not in upload_status.lower() and "timed out" not in upload_status
 
             if result["upgrade_applied"]:
-                # After a recovery upload the new firmware lands in the alternate slot and the
-                # device reboots back to the OLD version. Run Alternate one more time to activate it.
+                device_ready = False
+
                 if used_recovery:
-                    log(f"[{location} | {ip}] Recovery upload complete — activating new firmware via Run Alternate ...")
+                    # Recovery upload succeeded — device rebooted to OLD firmware.
+                    # Wait for it to come back, then Run Alternate to activate the new firmware.
+                    log(f"[{location} | {ip}] Recovery upload complete — waiting for device, then activating via Run Alternate ...")
                     if _wait_for_device_online(driver, location, ip, timeout=600):
                         _login(driver, location, ip, username, password)
                         try:
                             _nav_to_firmware_page(driver, location, ip, username, password)
                             if _click_run_alternate(driver, location, ip):
-                                log(f"[{location} | {ip}] Run Alternate clicked — waiting for final reboot ...")
+                                log(f"[{location} | {ip}] Run Alternate clicked — staying on reboot page ...")
+                                # Stay on the reboot-holding page; it transitions to login on its own
+                                device_ready = _wait_for_reboot_page(driver, location, ip, timeout=600)
                             else:
                                 log(f"[{location} | {ip}] Could not click Run Alternate for activation.")
                         except Exception as exc:
                             log(f"[{location} | {ip}] Activation step failed: {_short_error(exc)}")
+                else:
+                    # Normal upload — device rebooted after "Go Home"; navigate to login URL
+                    log(f"[{location} | {ip}] Waiting for device to come back up after upgrade ...")
+                    device_ready = _wait_for_device_online(driver, location, ip, timeout=600)
 
-                # Wait for device, sign in, and verify version
-                log(f"[{location} | {ip}] Waiting for device to come back up after upgrade ...")
-                if _wait_for_device_online(driver, location, ip, timeout=600):
+                if device_ready:
                     _login(driver, location, ip, username, password)
                     try:
                         _nav_to_firmware_page(driver, location, ip, username, password)
