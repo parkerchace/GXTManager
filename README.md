@@ -91,10 +91,11 @@ Copy those two columns from Excel or any spreadsheet and paste directly into the
 
 | Scenario | What the tool does |
 |---|---|
-| Normal upload | Submits file → waits for "FIRMWARE UPDATE SUCCESSFUL" → clicks Go Home → waits for reboot → verifies version |
-| 503 / upload error | Waits for device to recover → signs in → clicks Run Alternate → waits for reboot → uploads again → activates new firmware → verifies version |
-| Session drops mid-upload | Detects redirect to login page → checks if upload already landed → proceeds or recovers as needed |
-| Auth challenge at any step | Re-authenticates automatically and retries |
+| Normal upload | Submits file → waits for "FIRMWARE UPDATE SUCCESSFUL" → clicks Go Home → waits for reboot → signs in → verifies version |
+| 503 / upload error | Waits for device → signs in → navigates to Firmware Update → clicks Enable → clicks Run Alternate → accepts confirmation dialog → stays on reboot page until login appears → signs in → uploads again → activates new firmware via Run Alternate → waits for reboot → verifies version |
+| Session drops mid-upload | Detects redirect to login page immediately → checks if upload already landed (version match) → skips recovery if it did, otherwise runs full recovery |
+| Auth challenge at any step | Re-authenticates automatically and retries the current step |
+| Communications-only page load | Skips missing nav elements and proceeds directly to Firmware Update link |
 
 ---
 
