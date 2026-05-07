@@ -889,10 +889,10 @@ def process_firmware_ip(location: str, ip: str, username: str, password: str,
         result.update(error=_short_error(exc),
                       scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         log(f"[{location} | {ip}] ERROR: {_short_error(exc)}")
+    finally:
         if driver:
             try: driver.quit()
             except Exception: pass
-    # Browser window intentionally left open after firmware run so you can verify the result
     return result
 
 
