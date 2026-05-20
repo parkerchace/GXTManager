@@ -20,7 +20,7 @@ from selenium import webdriver
 from selenium.webdriver.firefox.service import Service
 from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.ui import WebDriverWait, Select as SeleniumSelect
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException, NoSuchWindowException
 from selenium.webdriver.common.action_chains import ActionChains
@@ -1022,6 +1022,369 @@ def run_firmware_scraper(targets, username, password, upgrade_mode,
 
 
 # ---------------------------------------------------------------------------
+# Mode 3 — SNMPv3 Configuration
+# ---------------------------------------------------------------------------
+
+def _nav_to_snmpv3_page(driver, location: str, ip: str,
+                         username: str = "", password: str = "") -> None:
+    def _reauth_if_needed():
+        if username and _is_auth_page(driver):
+            log(f"[{location} | {ip}] Auth challenge — re-logging in ...")
+            _login(driver, location, ip, username, password)
+
+    log(f"[{location} | {ip}] Navigating to SNMPv3 configuration ...")
+    _reauth_if_needed()
+
+    try:
+        js_click(driver, find_element_anywhere(driver, By.ID, "tab4", timeout=20,
+                                               label="Communications tab", require_visible=False))
+        time.sleep(2)
+        _reauth_if_needed()
+    except TimeoutException:
+        log(f"[{location} | {ip}] Communications tab not found — proceeding ...")
+
+    js_click(driver, find_element_anywhere(driver, By.ID, "report164220", timeout=20,
+                                           label="Protocols", require_visible=False))
+    time.sleep(2)
+    _reauth_if_needed()
+
+    js_click(driver, find_element_anywhere(driver, By.ID, "report164210", timeout=15,
+                                           label="SNMP", require_visible=False))
+    time.sleep(2)
+
+    js_click(driver, find_element_anywhere(driver, By.ID, "report16408164210", timeout=15,
+                                           label="SNMPv3 User list", require_visible=False))
+    time.sleep(2)
+
+    user_link = find_element_anywhere(driver, By.CSS_SELECTOR, 'a[title="SNMPv3 User [1]"]',
+                                      timeout=15, label="SNMPv3 User [1]", require_visible=False)
+    js_click(driver, user_link)
+    time.sleep(2)
+
+
+def _configure_snmpv3(driver, location: str, ip: str, cfg: dict) -> None:
+    log(f"[{location} | {ip}] Clicking Edit ...")
+    edit_btn = find_element_anywhere(driver, By.ID, "editButton", timeout=20,
+                                     label="Edit button", require_visible=False)
+    js_click(driver, edit_btn)
+    time.sleep(2)
+
+    log(f"[{location} | {ip}] Enabling SNMPv3 user ...")
+    chk = find_element_anywhere(driver, By.ID, "chkbx7385", timeout=15,
+                                label="SNMPv3 Enable checkbox", require_visible=False)
+    if not chk.is_selected():
+        js_click(driver, chk)
+        time.sleep(0.5)
+
+    log(f"[{location} | {ip}] Setting SNMPv3 username ...")
+    un_field = find_element_anywhere(driver, By.ID, "str7386", timeout=10,
+                                     label="SNMPv3 username", require_visible=False)
+    un_field.clear()
+    un_field.send_keys(cfg["snmp_username"])
+
+    access_map = {"Read Only": "0", "Read/Write": "1", "Traps Only": "2"}
+    SeleniumSelect(find_element_anywhere(driver, By.ID, "enum7387", timeout=10,
+                                         label="Access Type", require_visible=False)
+                   ).select_by_value(access_map.get(cfg["access_type"], "0"))
+
+    auth_map = {"None": "0", "MD5": "1", "SHA": "2"}
+    SeleniumSelect(find_element_anywhere(driver, By.ID, "enum7388", timeout=10,
+                                         label="Auth Protocol", require_visible=False)
+                   ).select_by_value(auth_map.get(cfg["auth_protocol"], "0"))
+
+    if cfg.get("auth_secret"):
+        auth_sec = find_element_anywhere(driver, By.ID, "str7389", timeout=10,
+                                         label="Auth Secret", require_visible=False)
+        auth_sec.clear()
+        auth_sec.send_keys(cfg["auth_secret"])
+
+    priv_map = {"None": "0", "DES": "1", "AES": "2"}
+    SeleniumSelect(find_element_anywhere(driver, By.ID, "enum7390", timeout=10,
+                                         label="Privacy Protocol", require_visible=False)
+                   ).select_by_value(priv_map.get(cfg["privacy_protocol"], "0"))
+
+    if cfg.get("privacy_secret"):
+        priv_sec = find_element_anywhere(driver, By.ID, "str7391", timeout=10,
+                                          label="Privacy Secret", require_visible=False)
+        priv_sec.clear()
+        priv_sec.send_keys(cfg["privacy_secret"])
+
+    if cfg.get("trap_targets"):
+        trap_tgt = find_element_anywhere(driver, By.ID, "str7392", timeout=10,
+                                          label="Trap Targets", require_visible=False)
+        trap_tgt.clear()
+        trap_tgt.send_keys(cfg["trap_targets"])
+
+    if cfg.get("trap_port"):
+        trap_port = find_element_anywhere(driver, By.ID, "num7393", timeout=10,
+                                           label="Trap Port", require_visible=False)
+        trap_port.clear()
+        trap_port.send_keys(cfg["trap_port"])
+
+    log(f"[{location} | {ip}] Saving SNMPv3 settings ...")
+    save_btn = find_element_anywhere(driver, By.ID, "submitButton", timeout=10,
+                                     label="Save button", require_visible=False)
+    js_click(driver, save_btn)
+    time.sleep(3)
+    log(f"[{location} | {ip}] SNMPv3 settings saved.")
+
+    # Disable SNMPv1/v2c
+    log(f"[{location} | {ip}] Navigating back to Protocols → SNMP to disable SNMPv1/v2c ...")
+    js_click(driver, find_element_anywhere(driver, By.ID, "report164220", timeout=20,
+                                           label="Protocols", require_visible=False))
+    time.sleep(2)
+    js_click(driver, find_element_anywhere(driver, By.ID, "report164210", timeout=15,
+                                           label="SNMP", require_visible=False))
+    time.sleep(2)
+
+    log(f"[{location} | {ip}] Clicking Edit for SNMP settings ...")
+    js_click(driver, find_element_anywhere(driver, By.ID, "editButton", timeout=15,
+                                           label="SNMP Edit button", require_visible=False))
+    time.sleep(2)
+
+    log(f"[{location} | {ip}] Unchecking SNMPv1/v2c Enable ...")
+    v1v2_chk = find_element_anywhere(driver, By.ID, "chkbx7400", timeout=15,
+                                     label="SNMPv1/v2c Enable checkbox", require_visible=False)
+    if v1v2_chk.is_selected():
+        js_click(driver, v1v2_chk)
+        time.sleep(0.5)
+        log(f"[{location} | {ip}] SNMPv1/v2c unchecked.")
+    else:
+        log(f"[{location} | {ip}] SNMPv1/v2c was already disabled.")
+
+    log(f"[{location} | {ip}] Saving SNMP settings ...")
+    js_click(driver, find_element_anywhere(driver, By.ID, "submitButton", timeout=10,
+                                           label="SNMP Save button", require_visible=False))
+    time.sleep(3)
+    log(f"[{location} | {ip}] SNMPv1/v2c disabled.")
+
+
+def process_snmpv3_ip(location: str, ip: str, username: str, password: str, cfg: dict) -> dict:
+    ip = _clean_ip(ip)
+    result = dict(location=location, ip=ip, model="", status="unknown",
+                  scraped_at="", error="")
+    driver = None
+    try:
+        driver = _make_driver()
+        _login(driver, location, ip, username, password)
+        result["model"] = _read_model(driver, location, ip)
+
+        _nav_to_snmpv3_page(driver, location, ip, username, password)
+        driver._au_nav_fn = lambda: _nav_to_snmpv3_page(driver, location, ip, username, password)
+
+        _configure_snmpv3(driver, location, ip, cfg)
+        result.update(status="success", scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    except NoSuchWindowException:
+        result.update(status="error", error="Browser window closed unexpectedly",
+                      scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log(f"[{location} | {ip}] ERROR: window closed")
+    except TimeoutException as exc:
+        result.update(status="timeout", error=_short_error(exc),
+                      scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log(f"[{location} | {ip}] TIMEOUT: {_short_error(exc)}")
+    except WebDriverException as exc:
+        result.update(status="error", error=_short_error(exc),
+                      scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log(f"[{location} | {ip}] WebDriver error: {_short_error(exc)}")
+    except Exception as exc:
+        result.update(status="error", error=_short_error(exc),
+                      scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log(f"[{location} | {ip}] Error: {_short_error(exc)}")
+    finally:
+        if driver:
+            try: driver.quit()
+            except Exception: pass
+    return result
+
+
+def _build_snmpv3_csv(results: list[dict]) -> str:
+    fixed = ["Location", "IP", "Model", "Status", "Scraped At", "Error"]
+    path = os.path.join(SCRIPT_DIR, f"snmpv3_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fixed, extrasaction="ignore")
+        w.writeheader()
+        for r in results:
+            if r is None:
+                continue
+            w.writerow({"Location": r["location"], "IP": r["ip"], "Model": r["model"],
+                        "Status": r["status"], "Scraped At": r["scraped_at"], "Error": r["error"]})
+    return path
+
+
+def run_snmpv3_config(targets, username, password, cfg, max_parallel=3):
+    results = [None] * len(targets)
+    def _run(idx, loc, ip):
+        time.sleep(idx * 1.5)
+        return idx, process_snmpv3_ip(loc, ip, username, password, cfg)
+    with ThreadPoolExecutor(max_workers=max_parallel) as pool:
+        futures = {pool.submit(_run, i, loc, ip): i for i,(loc,ip) in enumerate(targets)}
+        for fut in as_completed(futures):
+            try:
+                idx, r = fut.result()
+                results[idx] = r
+                s = f"[{r['location']} | {r['ip']}] {r['status'].upper()}"
+                if r["error"]:
+                    s += f"  — {r['error']}"
+                log(f"Finished: {s}")
+            except Exception as exc:
+                log(f"Worker error: {_short_error(exc)}")
+    path = _build_snmpv3_csv(results)
+    log(f"\nCSV saved: {path}")
+    log("\n=== SUMMARY ===")
+    for r in (r for r in results if r):
+        s = f"[{r['location']} | {r['ip']}] {r['status'].upper()}"
+        if r["error"]:
+            s += f"  — {r['error']}"
+        log(s)
+    log("Done.")
+
+
+# ---------------------------------------------------------------------------
+# Mode 4 — Silence Alarm
+# ---------------------------------------------------------------------------
+
+def process_silence_alarm_ip(location: str, ip: str, username: str, password: str) -> dict:
+    ip = _clean_ip(ip)
+    result = dict(location=location, ip=ip, model="", status="unknown",
+                  scraped_at="", error="")
+    driver = None
+    try:
+        driver = _make_driver()
+        _login(driver, location, ip, username, password)
+        result["model"] = _read_model(driver, location, ip)
+
+        log(f"[{location} | {ip}] Clicking System Configuration ...")
+        sys_cfg = find_element_anywhere(driver, By.ID, "report263940", timeout=30,
+                                        label="System Configuration", require_visible=False)
+        driver.execute_script("arguments[0].scrollIntoView(true);", sys_cfg)
+        time.sleep(0.5)
+        _real_click(driver, sys_cfg)
+        log(f"[{location} | {ip}] System Configuration clicked — waiting for page ...")
+        time.sleep(4)
+
+        log(f"[{location} | {ip}] Clicking Enable ...")
+        en = find_element_anywhere(driver, By.ID, "enableComms", timeout=20,
+                                   label="Enable", require_visible=False)
+        driver.execute_script("arguments[0].scrollIntoView(true);", en)
+        time.sleep(0.5)
+        _real_click(driver, en)
+        log(f"[{location} | {ip}] Enable clicked — waiting for commands to activate ...")
+        time.sleep(4)
+
+        log(f"[{location} | {ip}] Polling for Silence Alarm button to become enabled ...")
+        silence_btn = None
+        deadline_btn = time.time() + 45
+        while time.time() < deadline_btn:
+            try:
+                btn = find_element_anywhere(driver, By.ID, "commBtn6257", timeout=5,
+                                            label="Silence Alarm", require_visible=False)
+                disabled = btn.get_attribute("disabled")
+                if disabled is None:
+                    silence_btn = btn
+                    log(f"[{location} | {ip}] Silence Alarm button is active.")
+                    break
+                log(f"[{location} | {ip}] Silence Alarm button disabled (attr={disabled!r}) — waiting ...")
+            except Exception as e:
+                log(f"[{location} | {ip}] Silence Alarm button not found yet: {_short_error(e)}")
+            time.sleep(3)
+
+        if not silence_btn:
+            raise TimeoutException("Silence Alarm button never became enabled")
+
+        driver.execute_script("arguments[0].scrollIntoView(true);", silence_btn)
+        time.sleep(1)
+        log(f"[{location} | {ip}] Clicking Silence Alarm ...")
+        _real_click(driver, silence_btn)
+        log(f"[{location} | {ip}] Silence Alarm clicked — waiting for confirmation dialog ...")
+        time.sleep(2)
+
+        try:
+            alert = WebDriverWait(driver, 20).until(EC.alert_is_present())
+            log(f"[{location} | {ip}] Dialog: {alert.text!r} — clicking OK ...")
+            alert.accept()
+            log(f"[{location} | {ip}] Silence Alarm confirmed.")
+        except TimeoutException:
+            log(f"[{location} | {ip}] No native alert after 20s — checking for HTML OK button ...")
+            ok_btn = find_element_anywhere(
+                driver,
+                By.XPATH,
+                "//button[normalize-space(translate(.,'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'))='OK']"
+                " | //input[@type='button' and normalize-space(translate(@value,'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'))='OK']",
+                timeout=10, label="OK button", require_visible=True)
+            _real_click(driver, ok_btn)
+            log(f"[{location} | {ip}] HTML OK confirmed.")
+
+        time.sleep(5)
+        result.update(status="success", scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log(f"[{location} | {ip}] Done.")
+
+    except NoSuchWindowException:
+        result.update(status="error", error="Browser window closed unexpectedly",
+                      scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log(f"[{location} | {ip}] ERROR: window closed")
+    except TimeoutException as exc:
+        result.update(status="timeout", error=_short_error(exc),
+                      scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log(f"[{location} | {ip}] TIMEOUT: {_short_error(exc)}")
+    except WebDriverException as exc:
+        result.update(status="error", error=_short_error(exc),
+                      scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log(f"[{location} | {ip}] WebDriver error: {_short_error(exc)}")
+    except Exception as exc:
+        result.update(status="error", error=_short_error(exc),
+                      scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log(f"[{location} | {ip}] Error: {_short_error(exc)}")
+    finally:
+        if driver:
+            try: driver.quit()
+            except Exception: pass
+    return result
+
+
+def _build_silence_csv(results: list[dict]) -> str:
+    fixed = ["Location", "IP", "Model", "Status", "Scraped At", "Error"]
+    path = os.path.join(SCRIPT_DIR, f"silence_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fixed, extrasaction="ignore")
+        w.writeheader()
+        for r in results:
+            if r is None:
+                continue
+            w.writerow({"Location": r["location"], "IP": r["ip"], "Model": r["model"],
+                        "Status": r["status"], "Scraped At": r["scraped_at"], "Error": r["error"]})
+    return path
+
+
+def run_silence_alarm(targets, username, password, max_parallel=3):
+    results = [None] * len(targets)
+    def _run(idx, loc, ip):
+        time.sleep(idx * 1.5)
+        return idx, process_silence_alarm_ip(loc, ip, username, password)
+    with ThreadPoolExecutor(max_workers=max_parallel) as pool:
+        futures = {pool.submit(_run, i, loc, ip): i for i,(loc,ip) in enumerate(targets)}
+        for fut in as_completed(futures):
+            try:
+                idx, r = fut.result()
+                results[idx] = r
+                s = f"[{r['location']} | {r['ip']}] {r['status'].upper()}"
+                if r["error"]:
+                    s += f"  — {r['error']}"
+                log(f"Finished: {s}")
+            except Exception as exc:
+                log(f"Worker error: {_short_error(exc)}")
+    path = _build_silence_csv(results)
+    log(f"\nCSV saved: {path}")
+    log("\n=== SUMMARY ===")
+    for r in (r for r in results if r):
+        s = f"[{r['location']} | {r['ip']}] {r['status'].upper()}"
+        if r["error"]:
+            s += f"  — {r['error']}"
+        log(s)
+    log("Done.")
+
+
+# ---------------------------------------------------------------------------
 # GUI
 # ---------------------------------------------------------------------------
 
@@ -1067,6 +1430,18 @@ class App(tk.Tk):
         fw_tab = ttk.Frame(self.notebook)
         self.notebook.add(fw_tab, text="Firmware Upgrade")
         self._build_firmware_tab(fw_tab, pad)
+
+        # Tab 3 — SNMPv3
+        snmp_tab = ttk.Frame(self.notebook)
+        self.notebook.add(snmp_tab, text="SNMPv3 Config")
+        self._build_snmpv3_tab(snmp_tab, pad)
+
+        # Tab 4 — Silence Alarm
+        silence_tab = ttk.Frame(self.notebook)
+        self.notebook.add(silence_tab, text="Silence Alarm")
+        ttk.Label(silence_tab,
+                  text="Navigates to System Configuration → Enable → Silence Alarm and confirms the dialog.",
+                  foreground="gray").pack(padx=8, pady=6)
 
         # ── Targets ──
         tgt = ttk.LabelFrame(self, text="Targets — paste two columns from Excel:  Location  [tab]  IP Address")
@@ -1146,6 +1521,59 @@ class App(tk.Tk):
         self.target_ver_var = tk.StringVar()
         ttk.Entry(self.tv_frame, textvariable=self.target_ver_var, width=30).pack(side="left", padx=4)
         self.tv_frame.grid_remove()   # hidden until check_and_upgrade selected
+
+    def _build_snmpv3_tab(self, parent, pad):
+        cfg_frame = ttk.LabelFrame(parent, text="SNMPv3 User 1 Settings  (never stored)")
+        cfg_frame.grid(row=0, column=0, sticky="ew", **pad)
+        cfg_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(cfg_frame, text="SNMPv3 Username:").grid(row=0, column=0, sticky="e", **pad)
+        self.snmpv3_user_var = tk.StringVar()
+        un_e = ttk.Entry(cfg_frame, textvariable=self.snmpv3_user_var, width=30)
+        un_e.grid(row=0, column=1, sticky="w", **pad)
+        self._bind_paste(un_e)
+
+        ttk.Label(cfg_frame, text="Access Type:").grid(row=1, column=0, sticky="e", **pad)
+        self.snmpv3_access_var = tk.StringVar(value="Read Only")
+        ttk.Combobox(cfg_frame, textvariable=self.snmpv3_access_var, width=20,
+                     state="readonly", values=["Read Only", "Read/Write", "Traps Only"]
+                     ).grid(row=1, column=1, sticky="w", **pad)
+
+        ttk.Label(cfg_frame, text="Auth Protocol:").grid(row=2, column=0, sticky="e", **pad)
+        self.snmpv3_auth_proto_var = tk.StringVar(value="None")
+        ttk.Combobox(cfg_frame, textvariable=self.snmpv3_auth_proto_var, width=20,
+                     state="readonly", values=["None", "MD5", "SHA"]
+                     ).grid(row=2, column=1, sticky="w", **pad)
+
+        ttk.Label(cfg_frame, text="Auth Secret:").grid(row=3, column=0, sticky="e", **pad)
+        self.snmpv3_auth_secret_var = tk.StringVar()
+        auth_e = ttk.Entry(cfg_frame, textvariable=self.snmpv3_auth_secret_var, show="*", width=30)
+        auth_e.grid(row=3, column=1, sticky="w", **pad)
+        self._bind_paste(auth_e)
+
+        ttk.Label(cfg_frame, text="Privacy Protocol:").grid(row=4, column=0, sticky="e", **pad)
+        self.snmpv3_priv_proto_var = tk.StringVar(value="None")
+        ttk.Combobox(cfg_frame, textvariable=self.snmpv3_priv_proto_var, width=20,
+                     state="readonly", values=["None", "DES", "AES"]
+                     ).grid(row=4, column=1, sticky="w", **pad)
+
+        ttk.Label(cfg_frame, text="Privacy Secret:").grid(row=5, column=0, sticky="e", **pad)
+        self.snmpv3_priv_secret_var = tk.StringVar()
+        priv_e = ttk.Entry(cfg_frame, textvariable=self.snmpv3_priv_secret_var, show="*", width=30)
+        priv_e.grid(row=5, column=1, sticky="w", **pad)
+        self._bind_paste(priv_e)
+
+        ttk.Label(cfg_frame, text="Trap Targets:").grid(row=6, column=0, sticky="e", **pad)
+        self.snmpv3_trap_targets_var = tk.StringVar()
+        trap_e = ttk.Entry(cfg_frame, textvariable=self.snmpv3_trap_targets_var, width=30)
+        trap_e.grid(row=6, column=1, sticky="w", **pad)
+        self._bind_paste(trap_e)
+
+        ttk.Label(cfg_frame, text="Trap Port:").grid(row=7, column=0, sticky="e", **pad)
+        self.snmpv3_trap_port_var = tk.StringVar()
+        port_e = ttk.Entry(cfg_frame, textvariable=self.snmpv3_trap_port_var, width=10)
+        port_e.grid(row=7, column=1, sticky="w", **pad)
+        self._bind_paste(port_e)
 
     def _on_fw_mode(self):
         if self.fw_mode_var.get() == "check_and_upgrade":
@@ -1242,6 +1670,33 @@ class App(tk.Tk):
             def worker():
                 run_firmware_scraper(targets, username, password,
                                      fw_mode, target_ver, gtx4_file, gtx5_file, parallel)
+                LOG_QUEUE.put("__DONE__")
+        elif mode_tab == 2:  # SNMPv3
+            snmpv3_username = self.snmpv3_user_var.get().strip()
+            if not snmpv3_username:
+                messagebox.showwarning("Missing input", "Please enter an SNMPv3 username."); return
+            cfg = {
+                "snmp_username":    snmpv3_username,
+                "access_type":      self.snmpv3_access_var.get(),
+                "auth_protocol":    self.snmpv3_auth_proto_var.get(),
+                "auth_secret":      self.snmpv3_auth_secret_var.get(),
+                "privacy_protocol": self.snmpv3_priv_proto_var.get(),
+                "privacy_secret":   self.snmpv3_priv_secret_var.get(),
+                "trap_targets":     self.snmpv3_trap_targets_var.get().strip(),
+                "trap_port":        self.snmpv3_trap_port_var.get().strip(),
+            }
+            self.start_btn.config(state="disabled")
+            self.status_var.set(f"SNMPv3 Config — {len(targets)} device(s) ...")
+            log(f"Starting SNMPv3 configuration on {len(targets)} device(s) ...")
+            def worker():
+                run_snmpv3_config(targets, username, password, cfg, parallel)
+                LOG_QUEUE.put("__DONE__")
+        elif mode_tab == 3:  # Silence Alarm
+            self.start_btn.config(state="disabled")
+            self.status_var.set(f"Silence Alarm — {len(targets)} device(s) ...")
+            log(f"Starting Silence Alarm on {len(targets)} device(s) ...")
+            def worker():
+                run_silence_alarm(targets, username, password, parallel)
                 LOG_QUEUE.put("__DONE__")
         else:  # Battery
             self.start_btn.config(state="disabled")
