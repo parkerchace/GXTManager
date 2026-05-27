@@ -46,12 +46,23 @@ def _get_geckodriver() -> str:
         _GECKO_PATH = real
     return _GECKO_PATH
 
-BATTERY_LINK_TIMEOUT = 90
-TABLE_LOAD_TIMEOUT   = 20
+BATTERY_LINK_TIMEOUT  = 120   # time to wait for the Battery nav link to appear
+TABLE_LOAD_TIMEOUT    = 90    # time to wait for the detail table to fully populate
 FIRMWARE_XFER_TIMEOUT = 300   # 5 min for a firmware upload
-
-BATTERY_FIELDS = {"UPS Battery Status", "Battery Test Result", "Battery Cabinet Type"}
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _open_file(path: str) -> None:
+    """Open a file with the system default app (works on macOS, Windows, and Linux)."""
+    try:
+        if os.sys.platform == "darwin":
+            subprocess.run(["open", path])
+        elif os.sys.platform == "win32":
+            os.startfile(path)
+        else:
+            subprocess.run(["xdg-open", path])
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +214,94 @@ def scrape_detail_table(driver, timeout=20) -> tuple[str, list[dict]]:
     raise TimeoutException("detail table not found or remained empty")
 
 
+def scrape_battery_page(driver, timeout=90) -> tuple[str, list[dict]]:
+    """Scrape battery status and event data from the Vertiv battery detail page.
+
+    The battery page has two useful tables inside #detailPanelArea:
+      - #statusTable  - metrics like charge %, voltage, temperature (label/val/uom columns)
+      - #eventTable   - alarm events like Replace Battery, Battery Low (label/evtStatus_ columns)
+
+    Both are captured so the CSV has the full picture.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        driver.switch_to.default_content()
+        contexts = [None] + get_all_frames(driver)
+        for ctx in contexts:
+            if ctx is not None:
+                try:
+                    driver.switch_to.frame(ctx)
+                except Exception:
+                    driver.switch_to.default_content()
+                    continue
+
+            # The battery page wraps everything in #detailPanelArea; bail if it isn't here yet
+            try:
+                panel = driver.find_element(By.CSS_SELECTOR, "#detailPanelArea")
+            except Exception:
+                driver.switch_to.default_content()
+                continue
+
+            page_updated = ""
+            for sel in ("span.lastUpdated", "td.lastUpdated", "div.lastUpdated", "span.updated"):
+                try:
+                    page_updated = driver.find_element(By.CSS_SELECTOR, sel).text.strip()
+                    if page_updated:
+                        break
+                except Exception:
+                    pass
+            if not page_updated:
+                try:
+                    for line in driver.find_element(By.TAG_NAME, "body").text.splitlines():
+                        if "Updated:" in line:
+                            page_updated = line.strip()
+                            break
+                except Exception:
+                    pass
+
+            rows = []
+
+            # Pull every metric row out of #statusTable (val column holds the live reading)
+            try:
+                status_tbl = panel.find_element(By.CSS_SELECTOR, "#statusTable table")
+                for tr in status_tbl.find_elements(By.TAG_NAME, "tr"):
+                    try:
+                        lbl = tr.find_element(By.CSS_SELECTOR, "td[id^='label']").text.strip()
+                        val = tr.find_element(By.CSS_SELECTOR, "td[id^='val']").text.strip()
+                        uom = ""
+                        try:
+                            uom = tr.find_element(By.CSS_SELECTOR, "td[id^='uom']").text.strip()
+                        except Exception:
+                            pass
+                        if lbl:
+                            rows.append({"label": lbl, "value": val, "unit": uom})
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+            # Pull alarm events from #eventTable (status column uses evtStatus_ not val_)
+            try:
+                event_tbl = panel.find_element(By.CSS_SELECTOR, "#eventTable table")
+                for tr in event_tbl.find_elements(By.TAG_NAME, "tr"):
+                    try:
+                        lbl = tr.find_element(By.CSS_SELECTOR, "td[id^='label']").text.strip()
+                        val = tr.find_element(By.CSS_SELECTOR, "td[id^='evtStatus_']").text.strip()
+                        if lbl and val:
+                            rows.append({"label": lbl, "value": val, "unit": ""})
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+            driver.switch_to.default_content()
+            if rows and any(r["value"] for r in rows):
+                return page_updated, rows
+
+        time.sleep(1)
+    raise TimeoutException("Battery detail panel not found or remained empty after timeout")
+
+
 def _make_driver() -> webdriver.Firefox:
     opts = Options()
     opts.headless = False
@@ -217,7 +316,7 @@ def _login(driver, location, ip, username, password):
     u = urllib.parse.quote(username, safe="")
     p = urllib.parse.quote(password, safe="")
 
-    driver.set_page_load_timeout(30)
+    driver.set_page_load_timeout(60)  # some NICs are very slow to serve even the login page
     for scheme in ("http", "https"):
         url      = f"{scheme}://{ip}{login_path}"
         auth_url = f"{scheme}://{u}:{p}@{ip}{login_path}"
@@ -232,14 +331,14 @@ def _login(driver, location, ip, username, password):
                 log(f"[{location} | {ip}] {scheme.upper()} unreachable — trying HTTPS ...")
                 continue
             raise
-        time.sleep(2)
+        time.sleep(5)  # let the page finish rendering before we check the URL
         cur = driver.current_url
         if "about:neterror" in cur or "connectionFailure" in cur:
             log(f"[{location} | {ip}] {scheme.upper()} unreachable — trying HTTPS ...")
             continue
         break   # page loaded on this scheme
 
-    wait = WebDriverWait(driver, 15)
+    wait = WebDriverWait(driver, 45)  # slow NICs can take a long time to render the login form
     try:
         user_field = wait.until(EC.element_to_be_clickable((By.ID, "username")))
         log(f"[{location} | {ip}] Filling login form ...")
@@ -266,7 +365,7 @@ def _login(driver, location, ip, username, password):
     except TimeoutException:
         log(f"[{location} | {ip}] No login form — proceeding.")
 
-    time.sleep(5)
+    time.sleep(10)  # wait for the post-login redirect and dashboard to finish loading
 
 
 def _is_auth_page(driver) -> bool:
@@ -298,18 +397,18 @@ def _is_auth_page(driver) -> bool:
 
 
 def _read_model(driver, location, ip) -> str:
-    deadline = time.time() + 15
+    deadline = time.time() + 30  # some dashboards are slow to populate the model name
     while time.time() < deadline:
         try:
             el = find_element_anywhere(driver, By.CSS_SELECTOR, "#tab0 span",
-                                       timeout=5, label="model", require_visible=False)
+                                       timeout=8, label="model", require_visible=False)
             model = el.text.strip()
             if model and model.lower() != "device0":
                 log(f"[{location} | {ip}] Model: {model}")
                 return model
         except Exception:
             pass
-        time.sleep(2)
+        time.sleep(3)
     log(f"[{location} | {ip}] Model not resolved — page may have loaded Communications-only.")
     return ""
 
@@ -341,9 +440,9 @@ def process_battery_ip(location: str, ip: str, username: str, password: str) -> 
 
         result["model"] = _read_model(driver, location, ip)
 
-        # Battery
+        # Battery - try up to 6 times to give slow NICs a fair chance
         battery_rows, page_updated = [], ""
-        for attempt in range(1, 5):
+        for attempt in range(1, 7):
             log(f"[{location} | {ip}] Battery attempt {attempt} ...")
             try:
                 driver.switch_to.default_content()
@@ -351,40 +450,38 @@ def process_battery_ip(location: str, ip: str, username: str, password: str) -> 
                                             timeout=BATTERY_LINK_TIMEOUT,
                                             label="Battery link", require_visible=False)
                 js_click(driver, bat)
-                time.sleep(2)
-                page_updated, all_rows = scrape_detail_table(driver, timeout=TABLE_LOAD_TIMEOUT)
-                battery_rows = [r for r in all_rows if r["label"] in BATTERY_FIELDS]
-                if battery_rows and any(r["value"] for r in battery_rows):
+                time.sleep(6)  # give the page a moment to start loading before we poll
+                page_updated, battery_rows = scrape_battery_page(driver, timeout=TABLE_LOAD_TIMEOUT)
+                if battery_rows:
                     break
-                raise TimeoutException("Battery rows found but values still empty")
             except TimeoutException:
-                log(f"[{location} | {ip}] Battery attempt {attempt} failed — waiting ...")
+                log(f"[{location} | {ip}] Battery attempt {attempt} timed out - waiting 15s before retry ...")
                 driver.switch_to.default_content()
-                time.sleep(8)
+                time.sleep(15)
 
-        if not battery_rows or all(not r["value"] for r in battery_rows):
+        if not battery_rows:
             raise TimeoutException("Battery table empty after all retry attempts")
         log(f"[{location} | {ip}] {len(battery_rows)} battery fields captured.")
 
         # Communications → Active Networking → MAC
         log(f"[{location} | {ip}] Clicking Communications tab ...")
         driver.switch_to.default_content()
-        js_click(driver, find_element_anywhere(driver, By.ID, "tab4", timeout=30,
+        js_click(driver, find_element_anywhere(driver, By.ID, "tab4", timeout=60,
                                                label="Communications tab", require_visible=False))
-        time.sleep(2)
+        time.sleep(5)  # wait for the Communications section to fully load
 
         log(f"[{location} | {ip}] Expanding Support ...")
-        js_click(driver, find_element_anywhere(driver, By.ID, "164190Plus", timeout=30,
+        js_click(driver, find_element_anywhere(driver, By.ID, "164190Plus", timeout=60,
                                                label="Support expand", require_visible=False))
-        time.sleep(2)
+        time.sleep(5)  # wait for the Support submenu to expand
 
         log(f"[{location} | {ip}] Clicking Active Networking ...")
-        js_click(driver, find_element_anywhere(driver, By.ID, "report164330", timeout=30,
+        js_click(driver, find_element_anywhere(driver, By.ID, "report164330", timeout=60,
                                                label="Active Networking", require_visible=False))
-        time.sleep(2)
+        time.sleep(5)  # wait for the Active Networking page to load
 
         log(f"[{location} | {ip}] Reading Ethernet MAC ...")
-        mac_el = find_element_anywhere(driver, By.ID, "val6156_0", timeout=30,
+        mac_el = find_element_anywhere(driver, By.ID, "val6156_0", timeout=60,
                                        label="Ethernet MAC", require_visible=False)
         ethernet_mac = mac_el.text.strip()
         log(f"[{location} | {ip}] MAC: {ethernet_mac}")
@@ -460,6 +557,7 @@ def run_battery_scraper(targets, username, password, max_parallel=3):
                 log(f"Worker error: {_short_error(exc)}")
     path = _build_battery_csv(results)
     log(f"\nCSV saved: {path}")
+    _open_file(path)
     log("\n=== SUMMARY ===")
     for r in (r for r in results if r):
         s = f"[{r['location']} | {r['ip']}] {r['status'].upper()}"
@@ -1015,6 +1113,7 @@ def run_firmware_scraper(targets, username, password, upgrade_mode,
                 log(f"Worker error: {_short_error(exc)}")
     path = _build_firmware_csv(results)
     log(f"\nCSV saved: {path}")
+    _open_file(path)
     log("\n=== SUMMARY ===")
     for r in (r for r in results if r):
         log(f"[{r['location']} | {r['ip']}] {r['model']}  current={r['current_version']}  applied={r['upgrade_applied']}  status={r['upload_status'] or r['error'] or 'ok'}")
@@ -1162,7 +1261,7 @@ def _configure_snmpv3(driver, location: str, ip: str, cfg: dict) -> None:
 def process_snmpv3_ip(location: str, ip: str, username: str, password: str, cfg: dict) -> dict:
     ip = _clean_ip(ip)
     result = dict(location=location, ip=ip, model="", status="unknown",
-                  scraped_at="", error="")
+                  restart_required=False, restarted=False, scraped_at="", error="")
     driver = None
     try:
         driver = _make_driver()
@@ -1174,6 +1273,41 @@ def process_snmpv3_ip(location: str, ip: str, username: str, password: str, cfg:
 
         _configure_snmpv3(driver, location, ip, cfg)
         result.update(status="success", scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+        # After configuring SNMPv3, check whether the NIC flagged a restart requirement
+        log(f"[{location} | {ip}] Checking NIC events after SNMPv3 config ...")
+        try:
+            driver._au_nav_fn = None
+            try:
+                js_click(driver, find_element_anywhere(driver, By.ID, "tab4", timeout=20,
+                                                       label="Communications tab", require_visible=False))
+                time.sleep(2)
+            except TimeoutException:
+                pass
+            js_click(driver, find_element_anywhere(driver, By.ID, "report164180", timeout=20,
+                                                   label="Status", require_visible=False))
+            time.sleep(3)
+            _, nic_rows = scrape_battery_page(driver, timeout=60)
+            restart_required = any(
+                r["label"] == "System Restart Required" and r["value"].strip().lower() == "active"
+                for r in nic_rows
+            )
+            result["restart_required"] = restart_required
+            if restart_required:
+                log(f"[{location} | {ip}] System Restart Required is ACTIVE — restarting NIC ...")
+                js_click(driver, find_element_anywhere(driver, By.ID, "report164190", timeout=20,
+                                                       label="Support", require_visible=False))
+                time.sleep(2)
+                restarted = _do_nic_restart(driver, location, ip)
+                result["restarted"] = restarted
+                if restarted:
+                    log(f"[{location} | {ip}] NIC restart initiated successfully.")
+                else:
+                    log(f"[{location} | {ip}] NIC restart could not be completed.")
+            else:
+                log(f"[{location} | {ip}] No NIC restart required.")
+        except Exception as exc:
+            log(f"[{location} | {ip}] NIC event check after SNMPv3 failed: {_short_error(exc)}")
 
     except NoSuchWindowException:
         result.update(status="error", error="Browser window closed unexpectedly",
@@ -1199,7 +1333,7 @@ def process_snmpv3_ip(location: str, ip: str, username: str, password: str, cfg:
 
 
 def _build_snmpv3_csv(results: list[dict]) -> str:
-    fixed = ["Location", "IP", "Model", "Status", "Scraped At", "Error"]
+    fixed = ["Location", "IP", "Model", "Status", "Restart Required", "NIC Restarted", "Scraped At", "Error"]
     path = os.path.join(SCRIPT_DIR, f"snmpv3_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fixed, extrasaction="ignore")
@@ -1208,7 +1342,10 @@ def _build_snmpv3_csv(results: list[dict]) -> str:
             if r is None:
                 continue
             w.writerow({"Location": r["location"], "IP": r["ip"], "Model": r["model"],
-                        "Status": r["status"], "Scraped At": r["scraped_at"], "Error": r["error"]})
+                        "Status": r["status"],
+                        "Restart Required": "YES" if r.get("restart_required") else "no",
+                        "NIC Restarted":    "YES" if r.get("restarted") else "no",
+                        "Scraped At": r["scraped_at"], "Error": r["error"]})
     return path
 
 
@@ -1231,6 +1368,7 @@ def run_snmpv3_config(targets, username, password, cfg, max_parallel=3):
                 log(f"Worker error: {_short_error(exc)}")
     path = _build_snmpv3_csv(results)
     log(f"\nCSV saved: {path}")
+    _open_file(path)
     log("\n=== SUMMARY ===")
     for r in (r for r in results if r):
         s = f"[{r['location']} | {r['ip']}] {r['status'].upper()}"
@@ -1254,13 +1392,27 @@ def process_silence_alarm_ip(location: str, ip: str, username: str, password: st
         _login(driver, location, ip, username, password)
         result["model"] = _read_model(driver, location, ip)
 
-        log(f"[{location} | {ip}] Clicking System Configuration ...")
-        sys_cfg = find_element_anywhere(driver, By.ID, "report263940", timeout=30,
-                                        label="System Configuration", require_visible=False)
-        driver.execute_script("arguments[0].scrollIntoView(true);", sys_cfg)
+        # Wait for the sidebar to load (either link appearing means it's ready),
+        # then prefer System Configuration if it's there -- some models have both,
+        # and System Configuration is the one with the Silence Alarm command.
+        log(f"[{location} | {ip}] Waiting for sidebar nav links to load ...")
+        find_element_anywhere(
+            driver,
+            By.XPATH, "//*[@id='report163910' or @id='report263940']",
+            timeout=60, label="System nav link", require_visible=False)
+        # Now that the sidebar is loaded, check whether System Configuration is present
+        try:
+            nav_link = driver.find_element(By.ID, "report263940")
+            log(f"[{location} | {ip}] System Configuration found — using that.")
+        except Exception:
+            nav_link = driver.find_element(By.ID, "report163910")
+            log(f"[{location} | {ip}] System Configuration not present — using System.")
+        nav_label = nav_link.get_attribute("id")
+        log(f"[{location} | {ip}] Clicking {nav_label} ...")
+        driver.execute_script("arguments[0].scrollIntoView(true);", nav_link)
         time.sleep(0.5)
-        _real_click(driver, sys_cfg)
-        log(f"[{location} | {ip}] System Configuration clicked — waiting for page ...")
+        _real_click(driver, nav_link)
+        log(f"[{location} | {ip}] Nav clicked — waiting for page ...")
         time.sleep(4)
 
         log(f"[{location} | {ip}] Clicking Enable ...")
@@ -1269,10 +1421,9 @@ def process_silence_alarm_ip(location: str, ip: str, username: str, password: st
         driver.execute_script("arguments[0].scrollIntoView(true);", en)
         time.sleep(0.5)
         _real_click(driver, en)
-        log(f"[{location} | {ip}] Enable clicked — waiting for commands to activate ...")
+        log(f"[{location} | {ip}] Enable clicked — polling for Silence Alarm button ...")
         time.sleep(4)
 
-        log(f"[{location} | {ip}] Polling for Silence Alarm button to become enabled ...")
         silence_btn = None
         deadline_btn = time.time() + 45
         while time.time() < deadline_btn:
@@ -1375,11 +1526,439 @@ def run_silence_alarm(targets, username, password, max_parallel=3):
                 log(f"Worker error: {_short_error(exc)}")
     path = _build_silence_csv(results)
     log(f"\nCSV saved: {path}")
+    _open_file(path)
     log("\n=== SUMMARY ===")
     for r in (r for r in results if r):
         s = f"[{r['location']} | {r['ip']}] {r['status'].upper()}"
         if r["error"]:
             s += f"  — {r['error']}"
+        log(s)
+    log("Done.")
+
+
+# ---------------------------------------------------------------------------
+# Shared NIC restart helper (used by Restart NIC tab and post-SNMPv3 flow)
+# ---------------------------------------------------------------------------
+
+def _do_nic_restart(driver, location: str, ip: str) -> bool:
+    """Click Enable then Restart on the Support page and confirm the dialog.
+    Returns True if the restart was successfully initiated."""
+    try:
+        en = find_element_anywhere(driver, By.ID, "enableComms", timeout=20,
+                                   label="Enable", require_visible=False)
+        driver.execute_script("arguments[0].scrollIntoView(true);", en)
+        time.sleep(0.5)
+        _real_click(driver, en)
+        log(f"[{location} | {ip}] Enable clicked — waiting for Restart button ...")
+        time.sleep(3)
+
+        restart_btn = None
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            try:
+                btn = find_element_anywhere(driver, By.ID, "commBtn139", timeout=5,
+                                            label="Restart", require_visible=False)
+                if btn.get_attribute("disabled") is None:
+                    restart_btn = btn
+                    break
+                log(f"[{location} | {ip}] Restart button still disabled — waiting ...")
+            except Exception as e:
+                log(f"[{location} | {ip}] Restart button not found yet: {_short_error(e)}")
+            time.sleep(2)
+
+        if not restart_btn:
+            log(f"[{location} | {ip}] Restart button never became enabled.")
+            return False
+
+        driver.execute_script("arguments[0].scrollIntoView(true);", restart_btn)
+        time.sleep(0.5)
+        log(f"[{location} | {ip}] Clicking Restart ...")
+        _real_click(driver, restart_btn)
+
+        try:
+            alert = WebDriverWait(driver, 15).until(EC.alert_is_present())
+            log(f"[{location} | {ip}] Dialog: {alert.text!r} — clicking OK ...")
+            alert.accept()
+            log(f"[{location} | {ip}] NIC restart confirmed.")
+        except TimeoutException:
+            try:
+                ok_btn = find_element_anywhere(
+                    driver,
+                    By.XPATH,
+                    "//button[normalize-space(translate(.,'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'))='OK']"
+                    " | //input[@type='button' and normalize-space(translate(@value,'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'))='OK']",
+                    timeout=5, label="OK button", require_visible=True)
+                _real_click(driver, ok_btn)
+                log(f"[{location} | {ip}] NIC restart confirmed via HTML dialog.")
+            except Exception:
+                log(f"[{location} | {ip}] Restart clicked — no confirmation dialog detected.")
+        return True
+    except Exception as exc:
+        log(f"[{location} | {ip}] NIC restart failed: {_short_error(exc)}")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Mode 5 — Turn Output ON
+# ---------------------------------------------------------------------------
+
+def process_output_ip(location: str, ip: str, username: str, password: str) -> dict:
+    ip = _clean_ip(ip)
+    result = dict(location=location, ip=ip, model="", status="unknown",
+                  scraped_at="", error="")
+    driver = None
+    try:
+        driver = _make_driver()
+        _login(driver, location, ip, username, password)
+        result["model"] = _read_model(driver, location, ip)
+
+        log(f"[{location} | {ip}] Clicking Output ...")
+        out_link = find_element_anywhere(driver, By.ID, "report163870", timeout=60,
+                                         label="Output", require_visible=False)
+        driver.execute_script("arguments[0].scrollIntoView(true);", out_link)
+        time.sleep(0.5)
+        _real_click(driver, out_link)
+        log(f"[{location} | {ip}] Output clicked — waiting for page ...")
+        time.sleep(4)
+
+        log(f"[{location} | {ip}] Clicking Enable ...")
+        en = find_element_anywhere(driver, By.ID, "enableOutput", timeout=20,
+                                   label="Enable Output", require_visible=False)
+        driver.execute_script("arguments[0].scrollIntoView(true);", en)
+        time.sleep(0.5)
+        _real_click(driver, en)
+        log(f"[{location} | {ip}] Enable clicked — polling for Turn Output ON button ...")
+        time.sleep(4)
+
+        output_btn = None
+        deadline_btn = time.time() + 45
+        while time.time() < deadline_btn:
+            try:
+                btn = find_element_anywhere(driver, By.ID, "commBtn5816", timeout=5,
+                                            label="Turn Output ON", require_visible=False)
+                if btn.get_attribute("disabled") is None:
+                    output_btn = btn
+                    log(f"[{location} | {ip}] Turn Output ON button is active.")
+                    break
+                log(f"[{location} | {ip}] Turn Output ON button still disabled — waiting ...")
+            except Exception as e:
+                log(f"[{location} | {ip}] Turn Output ON button not found yet: {_short_error(e)}")
+            time.sleep(3)
+
+        if not output_btn:
+            raise TimeoutException("Turn Output ON button never became enabled")
+
+        driver.execute_script("arguments[0].scrollIntoView(true);", output_btn)
+        time.sleep(1)
+        log(f"[{location} | {ip}] Clicking Turn Output ON ...")
+        _real_click(driver, output_btn)
+        time.sleep(2)
+
+        try:
+            alert = WebDriverWait(driver, 20).until(EC.alert_is_present())
+            log(f"[{location} | {ip}] Dialog: {alert.text!r} — clicking OK ...")
+            alert.accept()
+            log(f"[{location} | {ip}] Turn Output ON confirmed.")
+        except TimeoutException:
+            log(f"[{location} | {ip}] No native alert — checking for HTML OK button ...")
+            ok_btn = find_element_anywhere(
+                driver,
+                By.XPATH,
+                "//button[normalize-space(translate(.,'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'))='OK']"
+                " | //input[@type='button' and normalize-space(translate(@value,'abcdefghijklmnopqrstuvwxyz','ABCDEFGHIJKLMNOPQRSTUVWXYZ'))='OK']",
+                timeout=10, label="OK button", require_visible=True)
+            _real_click(driver, ok_btn)
+            log(f"[{location} | {ip}] HTML OK confirmed.")
+
+        time.sleep(5)
+        result.update(status="success", scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log(f"[{location} | {ip}] Done.")
+
+    except NoSuchWindowException:
+        result.update(status="error", error="Browser window closed unexpectedly",
+                      scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log(f"[{location} | {ip}] ERROR: window closed")
+    except TimeoutException as exc:
+        result.update(status="timeout", error=_short_error(exc),
+                      scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log(f"[{location} | {ip}] TIMEOUT: {_short_error(exc)}")
+    except WebDriverException as exc:
+        result.update(status="error", error=_short_error(exc),
+                      scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log(f"[{location} | {ip}] WebDriver error: {_short_error(exc)}")
+    except Exception as exc:
+        result.update(status="error", error=_short_error(exc),
+                      scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log(f"[{location} | {ip}] Error: {_short_error(exc)}")
+    finally:
+        if driver:
+            try: driver.quit()
+            except Exception: pass
+    return result
+
+
+def _build_output_csv(results: list[dict]) -> str:
+    fixed = ["Location", "IP", "Model", "Status", "Scraped At", "Error"]
+    path = os.path.join(SCRIPT_DIR, f"output_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fixed, extrasaction="ignore")
+        w.writeheader()
+        for r in results:
+            if r is None:
+                continue
+            w.writerow({"Location": r["location"], "IP": r["ip"], "Model": r["model"],
+                        "Status": r["status"], "Scraped At": r["scraped_at"], "Error": r["error"]})
+    return path
+
+
+def run_output(targets, username, password, max_parallel=3):
+    results = [None] * len(targets)
+    def _run(idx, loc, ip):
+        time.sleep(idx * 1.5)
+        return idx, process_output_ip(loc, ip, username, password)
+    with ThreadPoolExecutor(max_workers=max_parallel) as pool:
+        futures = {pool.submit(_run, i, loc, ip): i for i,(loc,ip) in enumerate(targets)}
+        for fut in as_completed(futures):
+            try:
+                idx, r = fut.result()
+                results[idx] = r
+                s = f"[{r['location']} | {r['ip']}] {r['status'].upper()}"
+                if r["error"]:
+                    s += f"  - {r['error']}"
+                log(f"Finished: {s}")
+            except Exception as exc:
+                log(f"Worker error: {_short_error(exc)}")
+    path = _build_output_csv(results)
+    log(f"\nCSV saved: {path}")
+    _open_file(path)
+    log("\n=== SUMMARY ===")
+    for r in (r for r in results if r):
+        s = f"[{r['location']} | {r['ip']}] {r['status'].upper()}"
+        if r["error"]:
+            s += f"  - {r['error']}"
+        log(s)
+    log("Done.")
+
+
+# ---------------------------------------------------------------------------
+# Mode 6 — Restart NIC
+# ---------------------------------------------------------------------------
+
+def process_restart_nic_ip(location: str, ip: str, username: str, password: str) -> dict:
+    ip = _clean_ip(ip)
+    result = dict(location=location, ip=ip, model="", status="unknown",
+                  scraped_at="", error="")
+    driver = None
+    try:
+        driver = _make_driver()
+        _login(driver, location, ip, username, password)
+        result["model"] = _read_model(driver, location, ip)
+
+        log(f"[{location} | {ip}] Navigating to Communications > Support ...")
+        try:
+            js_click(driver, find_element_anywhere(driver, By.ID, "tab4", timeout=20,
+                                                   label="Communications tab", require_visible=False))
+            time.sleep(2)
+        except TimeoutException:
+            log(f"[{location} | {ip}] Communications tab not found — proceeding ...")
+
+        js_click(driver, find_element_anywhere(driver, By.ID, "report164190", timeout=20,
+                                               label="Support", require_visible=False))
+        time.sleep(3)
+
+        restarted = _do_nic_restart(driver, location, ip)
+        if restarted:
+            result.update(status="success", scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            log(f"[{location} | {ip}] NIC restart initiated.")
+        else:
+            result.update(status="error", error="Restart button never became enabled",
+                          scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    except NoSuchWindowException:
+        result.update(status="error", error="Browser window closed unexpectedly",
+                      scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log(f"[{location} | {ip}] ERROR: window closed")
+    except TimeoutException as exc:
+        result.update(status="timeout", error=_short_error(exc),
+                      scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log(f"[{location} | {ip}] TIMEOUT: {_short_error(exc)}")
+    except WebDriverException as exc:
+        result.update(status="error", error=_short_error(exc),
+                      scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log(f"[{location} | {ip}] WebDriver error: {_short_error(exc)}")
+    except Exception as exc:
+        result.update(status="error", error=_short_error(exc),
+                      scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log(f"[{location} | {ip}] Error: {_short_error(exc)}")
+    finally:
+        if driver:
+            try: driver.quit()
+            except Exception: pass
+    return result
+
+
+def _build_restart_nic_csv(results: list[dict]) -> str:
+    fixed = ["Location", "IP", "Model", "Status", "Scraped At", "Error"]
+    path = os.path.join(SCRIPT_DIR, f"restart_nic_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fixed, extrasaction="ignore")
+        w.writeheader()
+        for r in results:
+            if r is None:
+                continue
+            w.writerow({"Location": r["location"], "IP": r["ip"], "Model": r["model"],
+                        "Status": r["status"], "Scraped At": r["scraped_at"], "Error": r["error"]})
+    return path
+
+
+def run_restart_nic(targets, username, password, max_parallel=3):
+    results = [None] * len(targets)
+    def _run(idx, loc, ip):
+        time.sleep(idx * 1.5)
+        return idx, process_restart_nic_ip(loc, ip, username, password)
+    with ThreadPoolExecutor(max_workers=max_parallel) as pool:
+        futures = {pool.submit(_run, i, loc, ip): i for i,(loc,ip) in enumerate(targets)}
+        for fut in as_completed(futures):
+            try:
+                idx, r = fut.result()
+                results[idx] = r
+                s = f"[{r['location']} | {r['ip']}] {r['status'].upper()}"
+                if r["error"]:
+                    s += f"  - {r['error']}"
+                log(f"Finished: {s}")
+            except Exception as exc:
+                log(f"Worker error: {_short_error(exc)}")
+    path = _build_restart_nic_csv(results)
+    log(f"\nCSV saved: {path}")
+    _open_file(path)
+    log("\n=== SUMMARY ===")
+    for r in (r for r in results if r):
+        s = f"[{r['location']} | {r['ip']}] {r['status'].upper()}"
+        if r["error"]:
+            s += f"  - {r['error']}"
+        log(s)
+    log("Done.")
+
+
+# ---------------------------------------------------------------------------
+# Mode 7 — Check NIC Events
+# ---------------------------------------------------------------------------
+
+def process_nic_events_ip(location: str, ip: str, username: str, password: str) -> dict:
+    ip = _clean_ip(ip)
+    result = dict(location=location, ip=ip, model="", status="unknown",
+                  restart_required=False, event_rows=[], scraped_at="", error="")
+    driver = None
+    try:
+        driver = _make_driver()
+        _login(driver, location, ip, username, password)
+        result["model"] = _read_model(driver, location, ip)
+
+        log(f"[{location} | {ip}] Navigating to Communications > Status ...")
+        try:
+            js_click(driver, find_element_anywhere(driver, By.ID, "tab4", timeout=20,
+                                                   label="Communications tab", require_visible=False))
+            time.sleep(2)
+        except TimeoutException:
+            log(f"[{location} | {ip}] Communications tab not found — proceeding ...")
+
+        js_click(driver, find_element_anywhere(driver, By.ID, "report164180", timeout=20,
+                                               label="Status", require_visible=False))
+        time.sleep(3)
+
+        log(f"[{location} | {ip}] Scraping NIC status and events ...")
+        _, rows = scrape_battery_page(driver, timeout=60)
+
+        restart_required = any(
+            r["label"] == "System Restart Required" and r["value"].strip().lower() == "active"
+            for r in rows
+        )
+        result.update(status="success", restart_required=restart_required,
+                      event_rows=rows, scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+        if restart_required:
+            log(f"[{location} | {ip}] System Restart Required is ACTIVE.")
+        else:
+            log(f"[{location} | {ip}] No restart required.")
+        log(f"[{location} | {ip}] {len(rows)} NIC status fields captured.")
+
+    except NoSuchWindowException:
+        result.update(status="error", error="Browser window closed unexpectedly",
+                      scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log(f"[{location} | {ip}] ERROR: window closed")
+    except TimeoutException as exc:
+        result.update(status="timeout", error=_short_error(exc),
+                      scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log(f"[{location} | {ip}] TIMEOUT: {_short_error(exc)}")
+    except WebDriverException as exc:
+        result.update(status="error", error=_short_error(exc),
+                      scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log(f"[{location} | {ip}] WebDriver error: {_short_error(exc)}")
+    except Exception as exc:
+        result.update(status="error", error=_short_error(exc),
+                      scraped_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        log(f"[{location} | {ip}] Error: {_short_error(exc)}")
+    finally:
+        if driver:
+            try: driver.quit()
+            except Exception: pass
+    return result
+
+
+def _build_nic_events_csv(results: list[dict]) -> str:
+    lu: dict[str, str] = {}
+    for r in results:
+        for row in r.get("event_rows", []):
+            if row["label"] not in lu:
+                lu[row["label"]] = row["unit"]
+    event_cols = [(f"{lbl} ({unit})" if unit else lbl, lbl) for lbl, unit in lu.items()]
+    fixed = ["Location", "IP", "Model", "Restart Required", "Status", "Scraped At", "Error"]
+    path = os.path.join(SCRIPT_DIR, f"nic_events_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fixed + [c for c, _ in event_cols], extrasaction="ignore")
+        w.writeheader()
+        for r in results:
+            if r is None:
+                continue
+            row = {"Location": r["location"], "IP": r["ip"], "Model": r["model"],
+                   "Restart Required": "YES" if r.get("restart_required") else "no",
+                   "Status": r["status"], "Scraped At": r["scraped_at"], "Error": r["error"]}
+            vm = {er["label"]: er["value"] for er in r.get("event_rows", [])}
+            for col, lbl in event_cols:
+                row[col] = vm.get(lbl, "")
+            w.writerow(row)
+    return path
+
+
+def run_nic_events(targets, username, password, max_parallel=3):
+    results = [None] * len(targets)
+    def _run(idx, loc, ip):
+        time.sleep(idx * 1.5)
+        return idx, process_nic_events_ip(loc, ip, username, password)
+    with ThreadPoolExecutor(max_workers=max_parallel) as pool:
+        futures = {pool.submit(_run, i, loc, ip): i for i,(loc,ip) in enumerate(targets)}
+        for fut in as_completed(futures):
+            try:
+                idx, r = fut.result()
+                results[idx] = r
+                s = f"[{r['location']} | {r['ip']}] {r['status'].upper()}"
+                if r.get("restart_required"):
+                    s += "  - RESTART REQUIRED"
+                if r["error"]:
+                    s += f"  - {r['error']}"
+                log(f"Finished: {s}")
+            except Exception as exc:
+                log(f"Worker error: {_short_error(exc)}")
+    path = _build_nic_events_csv(results)
+    log(f"\nCSV saved: {path}")
+    _open_file(path)
+    log("\n=== SUMMARY ===")
+    for r in (r for r in results if r):
+        s = f"[{r['location']} | {r['ip']}] {r['status'].upper()}"
+        if r.get("restart_required"):
+            s += "  - RESTART REQUIRED"
+        if r["error"]:
+            s += f"  - {r['error']}"
         log(s)
     log("Done.")
 
@@ -1440,7 +2019,28 @@ class App(tk.Tk):
         silence_tab = ttk.Frame(self.notebook)
         self.notebook.add(silence_tab, text="Silence Alarm")
         ttk.Label(silence_tab,
-                  text="Navigates to System Configuration → Enable → Silence Alarm and confirms the dialog.",
+                  text="Navigates to System or System Configuration, enables commands, and silences the alarm.",
+                  foreground="gray").pack(padx=8, pady=6)
+
+        # Tab 5 — Turn Output ON
+        output_tab = ttk.Frame(self.notebook)
+        self.notebook.add(output_tab, text="Output")
+        ttk.Label(output_tab,
+                  text="Turns UPS output back on after a power outage. Clicks Output, Enable, Turn Output ON.",
+                  foreground="gray").pack(padx=8, pady=6)
+
+        # Tab 6 — Restart NIC
+        restart_tab = ttk.Frame(self.notebook)
+        self.notebook.add(restart_tab, text="Restart NIC")
+        ttk.Label(restart_tab,
+                  text="Navigates to Communications > Support, enables commands, and restarts the NIC card.",
+                  foreground="gray").pack(padx=8, pady=6)
+
+        # Tab 7 — Check NIC Events
+        nic_events_tab = ttk.Frame(self.notebook)
+        self.notebook.add(nic_events_tab, text="NIC Events")
+        ttk.Label(nic_events_tab,
+                  text="Navigates to Communications > Status and logs all NIC events. Flags System Restart Required in the CSV.",
                   foreground="gray").pack(padx=8, pady=6)
 
         # ── Targets ──
@@ -1697,6 +2297,27 @@ class App(tk.Tk):
             log(f"Starting Silence Alarm on {len(targets)} device(s) ...")
             def worker():
                 run_silence_alarm(targets, username, password, parallel)
+                LOG_QUEUE.put("__DONE__")
+        elif mode_tab == 4:  # Output
+            self.start_btn.config(state="disabled")
+            self.status_var.set(f"Turn Output ON — {len(targets)} device(s) ...")
+            log(f"Starting Turn Output ON on {len(targets)} device(s) ...")
+            def worker():
+                run_output(targets, username, password, parallel)
+                LOG_QUEUE.put("__DONE__")
+        elif mode_tab == 5:  # Restart NIC
+            self.start_btn.config(state="disabled")
+            self.status_var.set(f"Restart NIC — {len(targets)} device(s) ...")
+            log(f"Starting NIC restart on {len(targets)} device(s) ...")
+            def worker():
+                run_restart_nic(targets, username, password, parallel)
+                LOG_QUEUE.put("__DONE__")
+        elif mode_tab == 6:  # NIC Events
+            self.start_btn.config(state="disabled")
+            self.status_var.set(f"NIC Events — {len(targets)} device(s) ...")
+            log(f"Starting NIC event check on {len(targets)} device(s) ...")
+            def worker():
+                run_nic_events(targets, username, password, parallel)
                 LOG_QUEUE.put("__DONE__")
         else:  # Battery
             self.start_btn.config(state="disabled")
