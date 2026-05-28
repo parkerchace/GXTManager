@@ -1,6 +1,6 @@
 # GXTManager
 
-A macOS GUI tool for managing Vertiv GXT-4 and GXT-5 UPS units over the network. Run battery health reports and push comm card firmware upgrades across your whole UPS fleet — no command line, no Vertiv cloud subscription required.
+A macOS GUI tool for managing Vertiv GXT-4 and GXT-5 UPS units over the network. Run battery health reports, push firmware upgrades, configure SNMPv3, silence alarms, restore output after outages, and manage NIC cards across your whole UPS fleet — no command line, no Vertiv cloud subscription required.
 
 > **Note on platform:** This script is built and tested on macOS. It can be adapted to run on Windows with some Python knowledge or LLM assistance (primarily swapping out the launcher script and geckodriver setup).
 
@@ -21,8 +21,9 @@ The script logs into each device's built-in web interface directly, the same way
 ## What it does
 
 **Battery Report**
-- Logs into each device, pulls UPS Battery Status, Battery Test Result, Battery Cabinet Type, and Ethernet MAC
-- Exports everything to a timestamped CSV you can open in Excel
+- Logs into each device and scrapes every field from the Battery status page — charge percentage, time remaining, state of health, voltage, temperature, test result, last replaced date, and more
+- Also captures battery alarm events — Replace Battery, Battery Low, Battery Test Failed, etc.
+- Exports everything to a timestamped CSV that opens automatically when the run finishes
 
 **Firmware Upgrade**
 - Checks the current comm card firmware version on each device
@@ -30,6 +31,30 @@ The script logs into each device's built-in web interface directly, the same way
 - Handles errors automatically — if a device returns a 503 or drops the session mid-upload, the tool recovers and retries without any manual intervention
 - Confirms the installed version after each upgrade
 - Exports a per-device result CSV
+
+**SNMPv3 Config**
+- Configures SNMPv3 User 1 on each device (username, access type, auth protocol, auth secret, privacy protocol, privacy secret, trap targets, and trap port)
+- Disables SNMPv1/v2c after applying SNMPv3 settings
+- Automatically checks NIC events after configuration — if a System Restart Required flag is active, the NIC is restarted automatically
+- CSV includes Restart Required and NIC Restarted columns so you can see at a glance which devices needed it
+
+**Silence Alarm**
+- Navigates to the right page for the device model (some use System, others use System Configuration), enables commands, and clicks Silence Alarm
+- Confirms the dialog and logs the result
+
+**Output**
+- Turns UPS output back on after a power outage
+- Navigates to Output, enables commands, and clicks Turn Output ON
+- Useful when you get outage alerts and need to remotely restore output across multiple devices
+
+**Restart NIC**
+- Navigates to Communications > Support, enables commands, and restarts the NIC card
+- Good for applying changes that require a reboot or clearing a System Restart Required flag
+
+**NIC Events**
+- Navigates to Communications > Status and scrapes all NIC status and event fields
+- Flags any device with System Restart Required: Active as YES in the CSV so they are easy to spot
+- Useful as a follow-up check after firmware upgrades or SNMPv3 changes
 
 ---
 
@@ -81,9 +106,17 @@ Copy those two columns from Excel or any spreadsheet and paste directly into the
 
 ### Step 3 — Choose a tab and run
 
-**Battery tab** → click **Start** to pull battery status from all devices. Results save to `battery_report_<timestamp>.csv` next to the script.
+| Tab | What it does |
+|---|---|
+| **Battery Report** | Pulls all battery metrics and alarm events from each device |
+| **Firmware Upgrade** | Checks and optionally upgrades comm card firmware |
+| **SNMPv3 Config** | Configures SNMPv3 User 1 and disables SNMPv1/v2c |
+| **Silence Alarm** | Silences the audible alarm on each device |
+| **Output** | Turns UPS output back on after a power outage |
+| **Restart NIC** | Restarts the NIC card on each device |
+| **NIC Events** | Checks NIC status and flags devices that need a restart |
 
-**Firmware tab** → select your `.fl` firmware file(s), choose an upgrade mode, then click **Start**. Results save to `firmware_report_<timestamp>.csv`.
+Click **Start** to run against all pasted targets. The Parallel spinner controls how many devices are worked simultaneously (default 3). Each completed run saves a timestamped CSV next to the script and opens it automatically.
 
 ---
 
@@ -91,9 +124,9 @@ Copy those two columns from Excel or any spreadsheet and paste directly into the
 
 | Scenario | What the tool does |
 |---|---|
-| Normal upload | Submits file → waits for "FIRMWARE UPDATE SUCCESSFUL" → clicks Go Home → waits for reboot → signs in → verifies version |
-| 503 / upload error | Waits for device → signs in → navigates to Firmware Update → clicks Enable → clicks Run Alternate → accepts confirmation dialog → stays on reboot page until login appears → signs in → uploads again → activates new firmware via Run Alternate → waits for reboot → verifies version |
-| Session drops mid-upload | Detects redirect to login page immediately → checks if upload already landed (version match) → skips recovery if it did, otherwise runs full recovery |
+| Normal upload | Submits file, waits for "FIRMWARE UPDATE SUCCESSFUL", clicks Go Home, waits for reboot, signs in, verifies version |
+| 503 / upload error | Waits for device, signs in, navigates to Firmware Update, clicks Enable, clicks Run Alternate, accepts confirmation dialog, stays on reboot page until login appears, signs in, uploads again, activates new firmware via Run Alternate, waits for reboot, verifies version |
+| Session drops mid-upload | Detects redirect to login page immediately, checks if upload already landed (version match), skips recovery if it did, otherwise runs full recovery |
 | Auth challenge at any step | Re-authenticates automatically and retries the current step |
 | Communications-only page load | Skips missing nav elements and proceeds directly to Firmware Update link |
 
@@ -103,11 +136,25 @@ Copy those two columns from Excel or any spreadsheet and paste directly into the
 
 ### Battery report
 
-`Location, IP, Model, Ethernet MAC, Page Updated, Scraped At, Status, Error, UPS Battery Status, Battery Test Result, Battery Cabinet Type`
+All fields from the Battery status page are captured dynamically, so the exact columns depend on what each device reports. Common ones include:
+
+`Location, IP, Model, Ethernet MAC, Page Updated, Scraped At, Status, Error, UPS Battery Status, Battery Charge Status, Battery Test Result, Battery Cabinet Type, Battery Time Remaining, Battery Percentage Charge, Battery Current, DC Bus Voltage, Battery Temperature, Battery State of Health, Battery last replaced time, Battery Self Test, Replace Battery, Battery Low, Battery Test Failed, ...`
 
 ### Firmware report
 
-`Location, IP, Model, Ethernet MAC, Scraped At, Status, Error, Current Version, Upgrade Applied, Verified Version`
+`Location, IP, Model, Gen, Current Version, Target Version, Upgrade Mode, Upgrade Applied, Upload Status, Verified Version, Scraped At, Error`
+
+### SNMPv3 report
+
+`Location, IP, Model, Status, Restart Required, NIC Restarted, Scraped At, Error`
+
+### Silence Alarm / Output / Restart NIC reports
+
+`Location, IP, Model, Status, Scraped At, Error`
+
+### NIC Events report
+
+`Location, IP, Model, Restart Required, Status, Scraped At, Error, System Status, System Restart Required, ...` (plus a column for every event the NIC reports)
 
 ---
 
