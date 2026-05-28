@@ -5,6 +5,7 @@ GXTManager — Vertiv GXT UPS Management Tool
 """
 
 import csv
+import json
 import os
 import re
 import subprocess
@@ -50,6 +51,11 @@ BATTERY_LINK_TIMEOUT  = 120   # time to wait for the Battery nav link to appear
 TABLE_LOAD_TIMEOUT    = 90    # time to wait for the detail table to fully populate
 FIRMWARE_XFER_TIMEOUT = 300   # 5 min for a firmware upload
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _config_path() -> str:
+    """Return the path to the config file saved on the user's Desktop (works on Mac and Windows)."""
+    return os.path.join(os.path.expanduser("~"), "Desktop", "GXTManager_config.json")
 
 
 def _open_file(path: str) -> None:
@@ -1982,7 +1988,7 @@ class App(tk.Tk):
         self.columnconfigure(0, weight=1)
 
         # ── Credentials ──
-        creds = ttk.LabelFrame(self, text="Credentials  (never stored)")
+        creds = ttk.LabelFrame(self, text="Credentials")
         creds.grid(row=0, column=0, sticky="ew", padx=8, pady=(10,4))
         ttk.Label(creds, text="Username:").grid(row=0, column=0, sticky="e", **pad)
         self.username_var = tk.StringVar()
@@ -1994,6 +2000,12 @@ class App(tk.Tk):
         pe = ttk.Entry(creds, textvariable=self.password_var, show="*", width=30)
         pe.grid(row=1, column=1, sticky="w", **pad)
         self._bind_paste(pe)
+        cfg_btns = ttk.Frame(creds)
+        cfg_btns.grid(row=2, column=0, columnspan=2, sticky="w", padx=8, pady=(2, 6))
+        ttk.Button(cfg_btns, text="Save Config", command=self._save_config).pack(side="left", padx=(0, 6))
+        ttk.Button(cfg_btns, text="Load Config", command=self._load_config).pack(side="left")
+        ttk.Label(cfg_btns, text="Saves/loads all credentials and SNMPv3 settings to your Desktop.",
+                  foreground="gray").pack(side="left", padx=(10, 0))
 
         # ── Mode notebook ──
         self.notebook = ttk.Notebook(self)
@@ -2237,6 +2249,52 @@ class App(tk.Tk):
             if ip:
                 targets.append((location, ip))
         return targets
+
+    # ── Config save / load ───────────────────────────────────────────────────
+
+    def _save_config(self):
+        path = _config_path()
+        cfg = {
+            "username":              self.username_var.get(),
+            "password":              self.password_var.get(),
+            "snmpv3_username":       self.snmpv3_user_var.get(),
+            "snmpv3_access_type":    self.snmpv3_access_var.get(),
+            "snmpv3_auth_protocol":  self.snmpv3_auth_proto_var.get(),
+            "snmpv3_auth_secret":    self.snmpv3_auth_secret_var.get(),
+            "snmpv3_privacy_protocol": self.snmpv3_priv_proto_var.get(),
+            "snmpv3_privacy_secret": self.snmpv3_priv_secret_var.get(),
+            "snmpv3_trap_targets":   self.snmpv3_trap_targets_var.get(),
+            "snmpv3_trap_port":      self.snmpv3_trap_port_var.get(),
+        }
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2)
+            messagebox.showinfo("Config saved", f"Config saved to your Desktop:\n{os.path.basename(path)}")
+        except Exception as exc:
+            messagebox.showerror("Save failed", str(exc))
+
+    def _load_config(self):
+        path = _config_path()
+        if not os.path.isfile(path):
+            messagebox.showwarning("No config found",
+                                   f"No config file found on your Desktop.\n\nExpected: {os.path.basename(path)}")
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            self.username_var.set(cfg.get("username", ""))
+            self.password_var.set(cfg.get("password", ""))
+            self.snmpv3_user_var.set(cfg.get("snmpv3_username", ""))
+            self.snmpv3_access_var.set(cfg.get("snmpv3_access_type", "Read Only"))
+            self.snmpv3_auth_proto_var.set(cfg.get("snmpv3_auth_protocol", "None"))
+            self.snmpv3_auth_secret_var.set(cfg.get("snmpv3_auth_secret", ""))
+            self.snmpv3_priv_proto_var.set(cfg.get("snmpv3_privacy_protocol", "None"))
+            self.snmpv3_priv_secret_var.set(cfg.get("snmpv3_privacy_secret", ""))
+            self.snmpv3_trap_targets_var.set(cfg.get("snmpv3_trap_targets", ""))
+            self.snmpv3_trap_port_var.set(cfg.get("snmpv3_trap_port", ""))
+            messagebox.showinfo("Config loaded", f"Config loaded from your Desktop.")
+        except Exception as exc:
+            messagebox.showerror("Load failed", str(exc))
 
     # ── Start ────────────────────────────────────────────────────────────────
 
