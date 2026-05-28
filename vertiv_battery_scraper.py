@@ -2253,31 +2253,39 @@ class App(tk.Tk):
     # ── Config save / load ───────────────────────────────────────────────────
 
     def _save_config(self):
-        path = _config_path()
+        path = filedialog.asksaveasfilename(
+            title="Save config",
+            initialfile="GXTManager_config.json",
+            defaultextension=".json",
+            filetypes=[("JSON config", "*.json"), ("All files", "*")],
+        )
+        if not path:
+            return
         cfg = {
-            "username":              self.username_var.get(),
-            "password":              self.password_var.get(),
-            "snmpv3_username":       self.snmpv3_user_var.get(),
-            "snmpv3_access_type":    self.snmpv3_access_var.get(),
-            "snmpv3_auth_protocol":  self.snmpv3_auth_proto_var.get(),
-            "snmpv3_auth_secret":    self.snmpv3_auth_secret_var.get(),
+            "username":               self.username_var.get(),
+            "password":               self.password_var.get(),
+            "snmpv3_username":        self.snmpv3_user_var.get(),
+            "snmpv3_access_type":     self.snmpv3_access_var.get(),
+            "snmpv3_auth_protocol":   self.snmpv3_auth_proto_var.get(),
+            "snmpv3_auth_secret":     self.snmpv3_auth_secret_var.get(),
             "snmpv3_privacy_protocol": self.snmpv3_priv_proto_var.get(),
-            "snmpv3_privacy_secret": self.snmpv3_priv_secret_var.get(),
-            "snmpv3_trap_targets":   self.snmpv3_trap_targets_var.get(),
-            "snmpv3_trap_port":      self.snmpv3_trap_port_var.get(),
+            "snmpv3_privacy_secret":  self.snmpv3_priv_secret_var.get(),
+            "snmpv3_trap_targets":    self.snmpv3_trap_targets_var.get(),
+            "snmpv3_trap_port":       self.snmpv3_trap_port_var.get(),
         }
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(cfg, f, indent=2)
-            messagebox.showinfo("Config saved", f"Config saved to your Desktop:\n{os.path.basename(path)}")
         except Exception as exc:
             messagebox.showerror("Save failed", str(exc))
 
     def _load_config(self):
-        path = _config_path()
-        if not os.path.isfile(path):
-            messagebox.showwarning("No config found",
-                                   f"No config file found on your Desktop.\n\nExpected: {os.path.basename(path)}")
+        path = filedialog.askopenfilename(
+            title="Load config",
+            defaultextension=".json",
+            filetypes=[("JSON config", "*.json"), ("All files", "*")],
+        )
+        if not path:
             return
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -2292,7 +2300,6 @@ class App(tk.Tk):
             self.snmpv3_priv_secret_var.set(cfg.get("snmpv3_privacy_secret", ""))
             self.snmpv3_trap_targets_var.set(cfg.get("snmpv3_trap_targets", ""))
             self.snmpv3_trap_port_var.set(cfg.get("snmpv3_trap_port", ""))
-            messagebox.showinfo("Config loaded", f"Config loaded from your Desktop.")
         except Exception as exc:
             messagebox.showerror("Load failed", str(exc))
 
