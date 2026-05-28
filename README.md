@@ -1,8 +1,41 @@
 # GXTManager
 
-A macOS GUI tool for managing Vertiv GXT-4 and GXT-5 UPS units over the network. Run battery health reports, push firmware upgrades, configure SNMPv3, silence alarms, restore output after outages, and manage NIC cards across your whole UPS fleet. No command line, no Vertiv cloud subscription required.
+A GUI tool for managing Vertiv GXT-4 and GXT-5 UPS units over the network. Run battery health reports, push firmware upgrades, configure SNMPv3, silence alarms, restore output after outages, and manage NIC cards across your whole UPS fleet. No command line experience needed, no Vertiv cloud subscription required.
 
-> **Note on platform:** This script is built and tested on macOS. It can be adapted to run on Windows with some Python knowledge or LLM assistance (primarily swapping out the launcher script and geckodriver setup).
+Works on **macOS and Windows**.
+
+---
+
+## What you need before running this
+
+1. **Python 3.9 or newer** - download from [python.org](https://www.python.org/downloads/)
+   - On Windows: during installation, check the box that says **"Add Python to PATH"** before clicking Install Now
+   - On macOS: the installer from python.org is recommended (the built-in macOS Python is outdated)
+2. **Firefox** - download from [mozilla.org](https://www.mozilla.org/firefox/)
+   - The script controls Firefox to log into each UPS web interface. It must be installed but you do not need to do anything special with it
+3. **The files from this repo** - either download the ZIP from GitHub or clone it somewhere easy to find, like your Desktop
+
+Everything else (geckodriver, Python packages) is handled automatically on first run.
+
+---
+
+## How to run it
+
+### On macOS
+
+1. Open the folder in Finder
+2. Double-click **Run Vertiv Scraper.command**
+3. If macOS says it can't be opened, right-click it and choose **Open**, then click **Open** again in the dialog
+4. A terminal window will appear, install the required packages on first run, then open the app
+
+### On Windows
+
+1. Open the folder in File Explorer
+2. Double-click **Run Vertiv Scraper.bat**
+3. A command prompt window will appear, install the required packages on first run, then open the app
+4. If Windows Defender SmartScreen appears, click **More info** then **Run anyway**
+
+> The first launch takes about 30 seconds longer than usual while it sets up a virtual environment and downloads the required packages. Every launch after that is fast.
 
 ---
 
@@ -55,34 +88,6 @@ The script logs into each device's built-in web interface directly, the same way
 - Navigates to Communications > Status and scrapes all NIC status and event fields
 - Flags any device with System Restart Required: Active as YES in the CSV so they are easy to spot
 - Useful as a follow-up check after firmware upgrades or SNMPv3 changes
-
----
-
-## Requirements
-
-- macOS (tested on macOS 14+)
-- Python 3.9+
-- Firefox
-
-Install Python dependencies:
-
-```bash
-pip3 install -r requirements.txt
-```
-
-`geckodriver` is downloaded and signed automatically on first run.
-
----
-
-## How to run
-
-Double-click **Run Vertiv Scraper.command** in Finder. If macOS blocks it, right-click and choose Open.
-
-Or from Terminal:
-
-```bash
-python3 vertiv_battery_scraper.py
-```
 
 ---
 
