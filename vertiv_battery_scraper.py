@@ -2004,7 +2004,7 @@ class App(tk.Tk):
         cfg_btns.grid(row=2, column=0, columnspan=2, sticky="w", padx=8, pady=(2, 6))
         ttk.Button(cfg_btns, text="Save Config", command=self._save_config).pack(side="left", padx=(0, 6))
         ttk.Button(cfg_btns, text="Load Config", command=self._load_config).pack(side="left")
-        ttk.Label(cfg_btns, text="Saves/loads all credentials and SNMPv3 settings to your Desktop.",
+        ttk.Label(cfg_btns, text="Make sure you save this config somewhere SAFE. It contains sensitive information!",
                   foreground="gray").pack(side="left", padx=(10, 0))
 
         # ── Mode notebook ──
