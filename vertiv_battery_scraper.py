@@ -1284,7 +1284,14 @@ def _configure_snmpv3(driver, location: str, ip: str, cfg: dict) -> None:
     log(f"[{location} | {ip}] Saving Protocols settings ...")
     js_click(driver, find_element_anywhere(driver, By.ID, "submitButton", timeout=10,
                                            label="Protocols Save button", require_visible=False))
-    time.sleep(3)
+    time.sleep(2)
+    try:
+        alert = WebDriverWait(driver, 10).until(EC.alert_is_present())
+        log(f"[{location} | {ip}] Dialog: {alert.text!r} — clicking OK ...")
+        alert.accept()
+    except TimeoutException:
+        pass
+    time.sleep(2)
     log(f"[{location} | {ip}] Protocols settings saved.")
 
 
