@@ -1263,6 +1263,30 @@ def _configure_snmpv3(driver, location: str, ip: str, cfg: dict) -> None:
     time.sleep(3)
     log(f"[{location} | {ip}] SNMPv1/v2c disabled.")
 
+    # Enable SNMP on the Protocols page (top-level toggle)
+    log(f"[{location} | {ip}] Navigating to Protocols to enable SNMP ...")
+    js_click(driver, find_element_anywhere(driver, By.ID, "report164220", timeout=20,
+                                           label="Protocols", require_visible=False))
+    time.sleep(2)
+    log(f"[{location} | {ip}] Clicking Edit on Protocols page ...")
+    js_click(driver, find_element_anywhere(driver, By.ID, "editButton", timeout=15,
+                                           label="Protocols Edit button", require_visible=False))
+    time.sleep(2)
+    log(f"[{location} | {ip}] Enabling SNMP checkbox ...")
+    snmp_chk = find_element_anywhere(driver, By.ID, "chkbx7375", timeout=15,
+                                     label="SNMP Enable checkbox", require_visible=False)
+    if not snmp_chk.is_selected():
+        js_click(driver, snmp_chk)
+        time.sleep(0.5)
+        log(f"[{location} | {ip}] SNMP enabled.")
+    else:
+        log(f"[{location} | {ip}] SNMP was already enabled.")
+    log(f"[{location} | {ip}] Saving Protocols settings ...")
+    js_click(driver, find_element_anywhere(driver, By.ID, "submitButton", timeout=10,
+                                           label="Protocols Save button", require_visible=False))
+    time.sleep(3)
+    log(f"[{location} | {ip}] Protocols settings saved.")
+
 
 def process_snmpv3_ip(location: str, ip: str, username: str, password: str, cfg: dict) -> dict:
     ip = _clean_ip(ip)
