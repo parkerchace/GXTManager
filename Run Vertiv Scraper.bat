@@ -19,7 +19,15 @@ if errorlevel 1 (
 
 if not exist ".venv" (
     echo Setting up for first run...
-    python -m venv .venv 2>nul
+    python -m venv .venv
+    if errorlevel 1 (
+        echo.
+        echo Failed to create a virtual environment.
+        echo Make sure Python installed correctly and try again.
+        echo.
+        pause
+        exit /b 1
+    )
 )
 
 .venv\Scripts\pip install -q -q -r requirements.txt 2>nul
@@ -28,3 +36,9 @@ echo Starting GXTManager...
 echo.
 
 .venv\Scripts\python vertiv_battery_scraper.py
+
+if errorlevel 1 (
+    echo.
+    echo GXTManager closed with an error.
+    pause
+)
