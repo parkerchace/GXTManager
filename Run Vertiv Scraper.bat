@@ -17,10 +17,10 @@ if errorlevel 1 (
     exit /b 1
 )
 
-if not exist ".venv" (
+if not exist ".venv\Scripts\python.exe" (
     echo Setting up for first run...
     python -m venv .venv
-    if errorlevel 1 (
+    if not exist ".venv\Scripts\python.exe" (
         echo.
         echo Failed to create a virtual environment.
         echo Make sure Python installed correctly and try again.
