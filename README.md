@@ -1,105 +1,74 @@
 # GXTManager
 
-A GUI tool for managing Vertiv GXT-4 and GXT-5 UPS units over the network. Run battery health reports, push firmware upgrades, configure SNMPv3, silence alarms, restore output after outages, and manage NIC cards across your whole UPS fleet. No command line experience needed, no Vertiv cloud subscription required.
+A tool for managing Vertiv GXT-4 and GXT-5 UPS units over the network. Run battery health reports, push firmware upgrades, configure SNMPv3, silence alarms, restore output after outages, and manage NIC cards across your whole UPS fleet.
 
-Works on **macOS and Windows**.
-
----
-
-## What you need before running this
-
-1. **Python 3.9 or newer** - download from [python.org](https://www.python.org/downloads/)
-   - On Windows: during installation, check the box that says **"Add Python to PATH"** before clicking Install Now
-   - On macOS: the installer from python.org is recommended (the built-in macOS Python is outdated)
-2. **Firefox** - download from [mozilla.org](https://www.mozilla.org/firefox/)
-   - The script controls Firefox to log into each UPS web interface. It must be installed but you do not need to do anything special with it
-3. **The files from this repo** - either download the ZIP from GitHub or clone it somewhere easy to find, like your Desktop
-
-Everything else (geckodriver, Python packages) is handled automatically on first run.
+**No command line experience needed. No Vertiv cloud subscription required. Works on Mac and Windows.**
 
 ---
 
-## How to run it
+## Setup (do this once)
 
-### On macOS
+You only need to do this the first time. It takes about 5 minutes.
+
+### Step 1 - Install Python
+
+Go to [python.org/downloads](https://www.python.org/downloads/) and download the latest version.
+
+**On Windows - this part is important:** When the installer opens, look for a checkbox at the bottom of the first screen that says **"Add Python to PATH"**. Check that box before you click Install Now. If you miss it, uninstall Python and run the installer again.
+
+**On Mac:** Use the installer from python.org. The version built into macOS is outdated and will not work.
+
+### Step 2 - Install Firefox
+
+Go to [mozilla.org/firefox](https://www.mozilla.org/firefox/) and install it if you don't already have it. The tool uses Firefox to log into each UPS's web interface automatically. You don't need to configure anything in Firefox itself.
+
+### Step 3 - Download the tool
+
+Download this repo as a ZIP from GitHub (click the green **Code** button, then **Download ZIP**). Unzip it somewhere easy to find, like your Desktop.
+
+That's it for setup. Everything else (drivers, Python packages) downloads itself the first time you launch.
+
+---
+
+## How to launch it
+
+### On Mac
 
 1. Open the folder in Finder
 2. Double-click **Run Vertiv Scraper.command**
-3. If macOS says it can't be opened, right-click it and choose **Open**, then click **Open** again in the dialog
-4. A terminal window will appear, install the required packages on first run, then open the app
+3. If Mac says it can't be opened: right-click the file, choose **Open**, then click **Open** again in the popup that appears
+4. A black terminal window will appear. The first launch downloads some packages automatically, which takes about 30 seconds. The app window will open when it's ready.
 
 ### On Windows
 
 1. Open the folder in File Explorer
 2. Double-click **Run Vertiv Scraper.bat**
-3. A command prompt window will appear, install the required packages on first run, then open the app
-4. If Windows Defender SmartScreen appears, click **More info** then **Run anyway**
+3. A black command prompt window will appear. The first launch downloads some packages automatically, which takes about 30 seconds. The app window will open when it's ready.
+4. If a blue "Windows protected your PC" screen appears, click **More info**, then **Run anyway**. This happens because the file isn't signed by a publisher Windows recognizes. It's safe.
 
-> The first launch takes about 30 seconds longer than usual while it sets up a virtual environment and downloads the required packages. Every launch after that is fast.
-
----
-
-## No cloud management system needed
-
-Vertiv offers cloud-based NIC management platforms, but you don't need any of that to use this tool. All you need is:
-
-1. Each UPS device's **IP address** on your network
-2. A **label** for it - just a name you give the device so results are easy to read (e.g. the room number, closet name, or whatever makes sense to you)
-3. The **web interface credentials** for the devices (the username and password you would use to log in through a browser)
-
-The script logs into each device's built-in web interface directly, the same way you would manually in a browser.
+> After the first launch, every launch after that opens in just a few seconds.
 
 ---
 
-## What it does
+## What you need to use it
 
-**Battery Report**
-- Logs into each device and scrapes every field from the Battery status page: charge percentage, time remaining, state of health, voltage, temperature, test result, last replaced date, and more
-- Also captures battery alarm events: Replace Battery, Battery Low, Battery Test Failed, etc.
-- Exports everything to a timestamped CSV that opens automatically when the run finishes
+You don't need any Vertiv cloud account or special software. You just need:
 
-**Firmware Upgrade**
-- Checks the current comm card firmware version on each device
-- Uploads a new `.fl` firmware file to devices that need it
-- Handles errors automatically. If a device returns a 503 or drops the session mid-upload, the tool recovers and retries without any manual intervention
-- Confirms the installed version after each upgrade
-- Exports a per-device result CSV
-
-**SNMPv3 Config**
-- Configures SNMPv3 User 1 on each device (username, access type, auth protocol, auth secret, privacy protocol, privacy secret, trap targets, and trap port)
-- Disables SNMPv1/v2c after applying SNMPv3 settings
-- Automatically checks NIC events after configuration. If a System Restart Required flag is active, the NIC is restarted automatically
-- CSV includes Restart Required and NIC Restarted columns so you can see at a glance which devices needed it
-
-**Silence Alarm**
-- Navigates to the right page for the device model (some use System, others use System Configuration), enables commands, and clicks Silence Alarm
-- Confirms the dialog and logs the result
-
-**Output**
-- Turns UPS output back on after a power outage
-- Navigates to Output, enables commands, and clicks Turn Output ON
-- Useful when you get outage alerts and need to remotely restore output across multiple devices
-
-**Restart NIC**
-- Navigates to Communications > Support, enables commands, and restarts the NIC card
-- Good for applying changes that require a reboot or clearing a System Restart Required flag
-
-**NIC Events**
-- Navigates to Communications > Status and scrapes all NIC status and event fields
-- Flags any device with System Restart Required: Active as YES in the CSV so they are easy to spot
-- Useful as a follow-up check after firmware upgrades or SNMPv3 changes
+- The **IP address** of each UPS on your network
+- A **label** for each one - just a name that makes it easy to identify in reports (room number, closet name, etc.)
+- The **username and password** for the UPS web interfaces (the same login you'd use if you opened the device's IP in a browser)
 
 ---
 
 ## How to use it
 
-### Step 1 - Enter credentials
+### Step 1 - Enter your credentials
 
-Type your UPS web interface username and password into the Credentials fields at the top. These are never saved to disk.
+Type your UPS web interface username and password into the Credentials fields at the top of the app. These are never saved unless you click **Save Config**.
 
 ### Step 2 - Paste your device list
 
-The target box accepts two columns copied straight from a spreadsheet: **Location** (your label for the UPS) and **IP Address**, separated by a tab:
+In the **Targets** box, paste a list of your devices. The easiest way is to copy two columns from a spreadsheet - Location and IP Address - and paste them directly:
 
 ```
 BLDG-100-CLOSET-A    10.0.1.15
@@ -107,33 +76,40 @@ SERVER-ROOM-UPS      10.0.1.22
 4TH-FLOOR-SW         10.0.1.30
 ```
 
-Copy those two columns from Excel or any spreadsheet and paste directly into the box. You can also paste just a plain list of IPs (one per line) if you don't need location labels.
+You can also paste just a plain list of IP addresses (one per line) if you don't need location labels.
 
-### Step 3 - Choose a tab and run
+### Step 3 - Pick a tab and click Start
 
 | Tab | What it does |
 |---|---|
-| **Battery Report** | Pulls all battery metrics and alarm events from each device |
-| **Firmware Upgrade** | Checks and optionally upgrades comm card firmware |
-| **SNMPv3 Config** | Configures SNMPv3 User 1 and disables SNMPv1/v2c |
+| **Battery Report** | Pulls battery charge, health, temperature, time remaining, and alarm events from each device |
+| **Firmware Upgrade** | Checks the firmware version on each device and upgrades it if needed |
+| **SNMPv3 Config** | Configures SNMPv3 settings and disables the older SNMPv1/v2c |
 | **Silence Alarm** | Silences the audible alarm on each device |
 | **Output** | Turns UPS output back on after a power outage |
-| **Restart NIC** | Restarts the NIC card on each device |
+| **Restart NIC** | Restarts the network card on each device |
 | **NIC Events** | Checks NIC status and flags devices that need a restart |
 
-Click **Start** to run against all pasted targets. The Parallel spinner controls how many devices are worked simultaneously (default 3). Each completed run saves a timestamped CSV next to the script and opens it automatically.
+Click **Start** to run against every device in your list. The **Parallel** spinner controls how many devices are worked at the same time (default is 3 - you can increase this if you have a lot of devices and want it to run faster).
+
+When a run finishes, the results are saved as a CSV file next to the tool and opened automatically.
+
+### Saving and loading your settings
+
+If you run this tool regularly, use **Save Config** to save your credentials and SNMPv3 settings to a file so you don't have to retype them every time. Use **Load Config** to load them back. Keep that file somewhere safe - it contains passwords.
 
 ---
 
-## Firmware upgrade behavior
+## Firmware upgrade notes
 
-| Scenario | What the tool does |
+The firmware tab handles a few tricky situations automatically:
+
+| Situation | What happens |
 |---|---|
-| Normal upload | Submits file, waits for "FIRMWARE UPDATE SUCCESSFUL", clicks Go Home, waits for reboot, signs in, verifies version |
-| 503 / upload error | Waits for device, signs in, navigates to Firmware Update, clicks Enable, clicks Run Alternate, accepts confirmation dialog, stays on reboot page until login appears, signs in, uploads again, activates new firmware via Run Alternate, waits for reboot, verifies version |
-| Session drops mid-upload | Detects redirect to login page immediately, checks if upload already landed (version match), skips recovery if it did, otherwise runs full recovery |
-| Auth challenge at any step | Re-authenticates automatically and retries the current step |
-| Communications-only page load | Skips missing nav elements and proceeds directly to Firmware Update link |
+| Normal upload | Uploads file, waits for success confirmation, verifies the new version |
+| Device returns an error (503) | Waits for the device to recover, then retries the upload automatically |
+| Connection drops mid-upload | Checks if the firmware already landed, skips re-upload if it did |
+| Device asks to log in again | Re-authenticates automatically and picks up where it left off |
 
 ---
 
@@ -141,13 +117,13 @@ Click **Start** to run against all pasted targets. The Parallel spinner controls
 
 ### Battery report
 
-All fields from the Battery status page are captured dynamically, so the exact columns depend on what each device reports. Common ones include:
+Columns vary by device model, but common ones include:
 
-`Location, IP, Model, Ethernet MAC, Page Updated, Scraped At, Status, Error, UPS Battery Status, Battery Charge Status, Battery Test Result, Battery Cabinet Type, Battery Time Remaining, Battery Percentage Charge, Battery Current, DC Bus Voltage, Battery Temperature, Battery State of Health, Battery last replaced time, Battery Self Test, Replace Battery, Battery Low, Battery Test Failed, ...`
+`Location, IP, Model, Status, UPS Battery Status, Battery Charge Status, Battery Time Remaining, Battery Percentage Charge, Battery Temperature, Battery State of Health, Battery last replaced time, Battery Test Result, Replace Battery, Battery Low, Battery Test Failed, Scraped At, Error`
 
 ### Firmware report
 
-`Location, IP, Model, Gen, Current Version, Target Version, Upgrade Mode, Upgrade Applied, Upload Status, Verified Version, Scraped At, Error`
+`Location, IP, Model, Current Version, Target Version, Upgrade Applied, Verified Version, Scraped At, Error`
 
 ### SNMPv3 report
 
@@ -159,7 +135,7 @@ All fields from the Battery status page are captured dynamically, so the exact c
 
 ### NIC Events report
 
-`Location, IP, Model, Restart Required, Status, Scraped At, Error, System Status, System Restart Required, ...` (plus a column for every event the NIC reports)
+`Location, IP, Model, Restart Required, Status, Scraped At, Error` (plus a column for every event the NIC reports)
 
 ---
 
